@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 Calculations for 3D ray paths.
@@ -9,12 +8,8 @@ Calculations for 3D ray paths.
     The ObsPy Development Team (devs@obspy.org)
 :license:
     GNU Lesser General Public License, Version 3
-    (http://www.gnu.org/copyleft/lesser.html)
+    (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA @UnusedWildImport
-
 import warnings
 import numpy as np
 
@@ -114,8 +109,8 @@ def get_ray_paths(inventory, catalog, phase_list=['P'],
                 in zip(evlats, evlons, evdepths, times, magnitudes, event_ids,
                        origin_ids):
             arrivals = model.get_ray_paths_geo(
-                    evdepth_km, evlat, evlon, stlat, stlon,
-                    phase_list=phase_list, resample=True)
+                evdepth_km, evlat, evlon, stlat, stlon, phase_list=phase_list,
+                resample=True)
             if len(arrivals) == 0:
                 continue
 
@@ -136,8 +131,3 @@ def get_ray_paths(inventory, catalog, phase_list=['P'],
                                      magnitude, event_id, origin_id))
 
     return greatcircles
-
-
-if __name__ == '__main__':
-    import doctest
-    doctest.testmod(exclude_empty=True)

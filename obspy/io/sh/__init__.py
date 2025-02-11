@@ -1,10 +1,10 @@
 """
-obspy.io.sh - Q and ASC (Seismic Handler) read and write support for ObsPy
+obspy.io.sh - Q and ASC read and write, EVT read support (Seismic Handler)
 ==========================================================================
 
 The obspy.io.sh package contains methods in order to read and write seismogram
 files in the Q and ASC format used by the Seismic Handler software package
-(https://www.seismic-handler.org).
+(https://www.seismic-handler.org). EVT event files can also be read.
 
 :copyright:
     The ObsPy Development Team (devs@obspy.org)
@@ -66,11 +66,6 @@ or
 
 >>> st.write('file.asc', format = 'SH_ASC') #doctest: +SKIP
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
-
 if __name__ == '__main__':
     import doctest
     doctest.testmod(exclude_empty=True)

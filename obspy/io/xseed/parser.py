@@ -8,11 +8,6 @@ Main module containing XML-SEED, dataless SEED and RESP parser.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA @UnusedWildImport
-from future.utils import native_str
-
 import collections
 import copy
 import datetime
@@ -23,6 +18,7 @@ import os
 import re
 import warnings
 import zipfile
+from pathlib import Path
 
 from lxml import etree
 from lxml.etree import parse as xmlparse
@@ -85,7 +81,7 @@ class Parser(object):
 
         The XML-SEED format was proposed in [Tsuboi2004]_.
 
-        The IRIS RESP format can be found at
+        The EarthScope/IRIS RESP format can be found at
         http://ds.iris.edu/ds/nodes/dmc/data/formats/resp/
 
     """
@@ -176,7 +172,11 @@ class Parser(object):
             warnings.warn("Clearing parser before every subsequent read()")
             self.__init__()
         # try to transform everything into BytesIO object
-        if isinstance(data, (str, native_str)):
+        potential_filename_provided = None
+        if isinstance(data, (str, Path)):
+            if isinstance(data, Path):
+                data = str(data)
+            potential_filename_provided = data
             if re.search(r"://", data) is not None:
                 url = data
                 data = io.BytesIO()
@@ -234,7 +234,11 @@ class Parser(object):
                 raise
             self._format = 'XSEED'
         else:
-            raise IOError("First byte of data must be in [0-9<]")
+            msg = "First byte of data must be in [0-9<]"
+            if potential_filename_provided is not None \
+                    and not os.path.exists(potential_filename_provided):
+                msg += '. If a filename was provided, the file does not exist.'
+            raise IOError(msg)
 
     def get_xseed(self, version=DEFAULT_XSEED_VERSION, split_stations=False):
         """
@@ -667,7 +671,7 @@ class Parser(object):
         """
         Reads RESP files.
 
-        Reads IRIS RESP formatted data as produced with
+        Reads EarthScope/IRIS RESP formatted data as produced with
         'rdseed -f seed.test -R'.
 
         :type data: file or io.BytesIO
@@ -688,6 +692,8 @@ class Parser(object):
         comment_pattern = re.compile(r"^#.*\+")
 
         last_blockette_id = None
+        # No fields with number 0 exist.
+        last_field_number = 0
         for line in data.splitlines():
             m = re.match(pattern, line)
             if m:
@@ -700,12 +706,25 @@ class Parser(object):
                 # g[3]: Everything afterwards.
                 g = m.groups()
                 blockette_number = g[0]
+                field_number = int(g[1])
                 # A new blockette is starting.
-                if blockette_number != last_blockette_id:
+                # Either
+                # * when the blockette number increases or
+                # * (for blockette 58) when the field number suddenly decreases
+                # to 3 again.
+                # This catches a rare issue where blockette 58 is repeated
+                # twice (gain for a channel + total sensitivity) and the
+                # comments don't contain any `+` which would alternatively
+                # trigger a new blockette to be created.
+                if (blockette_number != last_blockette_id) or \
+                        ((blockette_number == "058") and
+                         (field_number == 3) and
+                         (field_number < last_field_number)):
                     if len(blockettefieldlist) > 0:
                         blockettelist.append(blockettefieldlist)
                         blockettefieldlist = list()
                     last_blockette_id = blockette_number
+                    last_field_number = 0
                 # Single field lines.
                 if not g[2]:
                     # Units of blkts 41 and 61 are normal.
@@ -717,7 +736,8 @@ class Parser(object):
                     else:
                         value = g[3].strip().split()[-1]
                     blockettefieldlist.append((blockette_number, g[1], value))
-                # Multiple field liens.
+                    last_field_number = field_number
+                # Multiple field lines.
                 else:
                     first_field = int(g[1])
                     last_field = int(g[2])
@@ -726,12 +746,15 @@ class Parser(object):
                     for i, value in enumerate(values):
                         blockettefieldlist.append(
                             (blockette_number, first_field + i, value))
+                    last_field_number = field_number
             elif re.match(comment_pattern, line):
                 # Comment line with a + in it means blockette is
                 # finished start a new one
                 if len(blockettefieldlist) > 0:
                     blockettelist.append(blockettefieldlist)
                     blockettefieldlist = list()
+                    last_blockette_id = blockette_number
+                    last_field_number = 0
         # Add last blockette
         if len(blockettefieldlist) > 0:
             blockettelist.append(blockettefieldlist)
@@ -983,7 +1006,8 @@ class Parser(object):
 
         :param blockettes_for_channel: The blockettes for the channel to
             calculate the response for.
-        :type blockettes_for_channel: List[Blockette]
+        :type blockettes_for_channel:
+            List[:class:`~obspy.io.xseed.blockette.Blockette]
         :param epoch_str: A string representing the epoch. Used for nice
             warning and error message.
         :type epoch_str: str
@@ -1420,9 +1444,9 @@ class Parser(object):
                             _list(b53.real_zero_error),
                             _list(b53.imaginary_zero_error)):
                         z = ComplexWithUncertainties(r, i)
-                        err = ComplexWithUncertainties(r_err, i_err)
-                        z.lower_uncertainty = z - err
-                        z.upper_uncertainty = z + err
+                        err = complex(r_err, i_err)
+                        z.lower_uncertainty = err
+                        z.upper_uncertainty = err
                         zeros.append(z)
                 poles = []
                 # Might somehow also not have zeros.
@@ -1432,9 +1456,9 @@ class Parser(object):
                             _list(b53.real_pole_error),
                             _list(b53.imaginary_pole_error)):
                         p = ComplexWithUncertainties(r, i)
-                        err = ComplexWithUncertainties(r_err, i_err)
-                        p.lower_uncertainty = p - err
-                        p.upper_uncertainty = p + err
+                        err = complex(r_err, i_err)
+                        p.lower_uncertainty = err
+                        p.upper_uncertainty = err
                         poles.append(p)
 
                 try:
@@ -1568,9 +1592,24 @@ class Parser(object):
                     34, b55.stage_input_units)
                 o_u = self.resolve_abbreviation(
                     34, b55.stage_output_units)
-                response_list = [
-                    ResponseListElement(f, a, p) for f, a, p in
-                    zip(b55.frequency, b55.amplitude, b55.phase_angle)]
+                if len([_i for _i in blkts if _i.id == 55]) == 1:
+                    response_list = [
+                        ResponseListElement(f, a, p) for f, a, p in
+                        zip(b55.frequency, b55.amplitude, b55.phase_angle)]
+                # allow mutiple blockette 55
+                else:
+                    _freq = []
+                    _amp = []
+                    _phase = []
+                    for _i in blkts:
+                        if _i.id == 55:
+                            _freq += _i.frequency
+                            _amp += _i.amplitude
+                            _phase += _i.phase_angle
+                    response_list = [
+                        ResponseListElement(f, a, p) for f, a, p in
+                        zip(_freq, _amp, _phase)]
+
                 response_stages.append(ResponseListResponseStage(
                     stage_sequence_number=b55.stage_sequence_number,
                     stage_gain=b58.sensitivity_gain if b58 else None,
@@ -1881,7 +1920,7 @@ class Parser(object):
                 if blkt.id == 50:
                     current_network = blkt.network_code.strip()
                     network_id = blkt.network_identifier_code
-                    if isinstance(network_id, (str, native_str)):
+                    if isinstance(network_id, str):
                         new_id = ""
                         for _i in network_id:
                             if _i.isdigit():
@@ -2259,8 +2298,9 @@ class Parser(object):
             root_attribute = self.temp['abbreviations']
         # Loop over all blockettes in data.
         while blockette_id != 0:
-            # remove spaces between blockettes
-            while data.read(1) == b' ':
+            # remove spaces between blockettes. In some cases these might be
+            # newlines.
+            while data.read(1) in [b' ', b'\n']:
                 continue
             data.seek(data.tell() - 1)
             try:

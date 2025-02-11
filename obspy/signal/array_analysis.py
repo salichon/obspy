@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # ------------------------------------------------------------------
 # Filename: array.py
@@ -17,15 +16,12 @@ Functions for Array Analysis
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 import math
 import warnings
 
+from matplotlib.dates import datestr2num
 import numpy as np
-from scipy.integrate import cumtrapz
+from scipy.integrate import cumulative_trapezoid
 
 from obspy.core import Stream
 from obspy.signal.headers import clibsignal
@@ -35,7 +31,7 @@ from obspy.signal.util import next_pow_2, util_geo_km
 
 def array_rotation_strain(subarray, ts1, ts2, ts3, vp, vs, array_coords,
                           sigmau):
-    """
+    r"""
     This routine calculates the best-fitting rigid body rotation and
     uniform strain as functions of time, and their formal errors, given
     three-component ground motion time series recorded on a seismic array.
@@ -57,16 +53,16 @@ def array_rotation_strain(subarray, ts1, ts2, ts3, vp, vs, array_coords,
         units of the station coordinates or ground motions, but the units of vp
         and vs must be the SAME because only their ratio is used.
     :type array_coords: numpy.ndarray
-    :param array_coords: array of dimension Na x 3, where Na is the number of
-        stations in the array.  array_coords[i,j], i in arange(Na), j in
+    :param array_coords: array of dimension na x 3, where na is the number of
+        stations in the array.  array_coords[i,j], i in arange(na), j in
         arange(3) is j coordinate of station i.  units of array_coords may be
         anything, but see the "Discussion of input and output units" above.
         The origin of coordinates is arbitrary and does not affect the
         calculated strains and rotations.  Stations may be entered in any
         order.
     :type ts1: numpy.ndarray
-    :param ts1: array of x1-component seismograms, dimension nt x Na.
-        ts1[j,k], j in arange(nt), k in arange(Na) contains the k'th time
+    :param ts1: array of x1-component seismograms, dimension nt x na.
+        ts1[j,k], j in arange(nt), k in arange(na) contains the k'th time
         sample of the x1 component ground motion at station k. NOTE that the
         seismogram in column k must correspond to the station whose coordinates
         are in row k of in.array_coords. nt is the number of time samples in
@@ -84,10 +80,10 @@ def array_rotation_strain(subarray, ts1, ts2, ts3, vp, vs, array_coords,
 
         * If sigmau is a scalar, it will be used for all components of all
           stations.
-        * If sigmau is a 1D array of length Na, sigmau[i] will be the noise
+        * If sigmau is a 1D array of length na, sigmau[i] will be the noise
           assigned to all components of the station corresponding to
           array_coords[i,:]
-        * If sigmau is a 2D array of dimension  Na x 3, then sigmau[i,j] is
+        * If sigmau is a 2D array of dimension  na x 3, then sigmau[i,j] is
           used as the noise of station i, component j.
 
         In all cases, this routine assumes that the noise covariance between
@@ -98,7 +94,7 @@ def array_rotation_strain(subarray, ts1, ts2, ts3, vp, vs, array_coords,
         be used, and only ground motion time series in the first, fourth, and
         tenth columns of ts1 will be used. Nplus1 is the number of elements in
         the subarray vector, and N is set to Nplus1 - 1. To use all stations in
-        the array, set in.subarray = arange(Na), where Na is the total number
+        the array, set in.subarray = arange(na), where na is the total number
         of stations in the array (equal to the number of rows of
         in.array_coords. Sequence of stations in the subarray vector is
         unimportant; i.e.  subarray = array([1, 4, 10]) will yield essentially
@@ -205,9 +201,9 @@ def array_rotation_strain(subarray, ts1, ts2, ts3, vp, vs, array_coords,
     (1) Note On Specifying Input Array And Selecting Subarrays
 
         This routine allows the user to input the coordinates and ground
-        motion time series of all stations in a seismic array having Na
+        motion time series of all stations in a seismic array having na
         stations and the user may select for analysis a subarray of Nplus1
-        <= Na stations.
+        <= na stations.
 
     (2) Discussion Of Physical Units Of Input And Output
 
@@ -230,7 +226,7 @@ def array_rotation_strain(subarray, ts1, ts2, ts3, vp, vs, array_coords,
     # start the code -------------------------------------------------
     # This assumes that all stations and components have the same number of
     # time samples, nt
-    [nt, Na] = np.shape(ts1)
+    [nt, na] = np.shape(ts1)
 
     # check to ensure all components have same duration
     if ts1.shape != ts2.shape:
@@ -241,16 +237,16 @@ def array_rotation_strain(subarray, ts1, ts2, ts3, vp, vs, array_coords,
     # check to verify that the number of stations in ts1 agrees with the number
     # of stations in array_coords
     [nrac, _ncac] = array_coords.shape
-    if nrac != Na:
-        msg = 'ts1 has %s columns(stations) but array_coords has ' % Na + \
+    if nrac != na:
+        msg = 'ts1 has %s columns(stations) but array_coords has ' % na + \
               '%s rows(stations)' % nrac
         raise ValueError(msg)
 
     # check stations in subarray exist
     if min(subarray) < 0:
         raise ValueError('Station number < 0 in subarray')
-    if max(subarray) > Na:
-        raise ValueError('Station number > Na in subarray')
+    if max(subarray) > na:
+        raise ValueError('Station number > na in subarray')
 
     # extract the stations of the subarray to be used
     subarraycoords = array_coords[subarray, :]
@@ -308,11 +304,11 @@ def array_rotation_strain(subarray, ts1, ts2, ts3, vp, vs, array_coords,
     elif np.shape(sigmau) == (np.size(sigmau),):
         # sigmau is a row or column vector
         # check dimension is okay
-        if np.size(sigmau) != Na:
-            raise ValueError('sigmau must have %s elements' % Na)
+        if np.size(sigmau) != na:
+            raise ValueError('sigmau must have %s elements' % na)
         junk = (np.c_[sigmau, sigmau, sigmau]) ** 2  # matrix of variances
         cu = np.diag(np.reshape(junk[subarray, :], (3 * n_plus_1)))
-    elif sigmau.shape == (Na, 3):
+    elif sigmau.shape == (na, 3):
         cu = np.diag(np.reshape(((sigmau[subarray, :]) ** 2).transpose(),
                      (3 * n_plus_1)))
     else:
@@ -350,13 +346,13 @@ def array_rotation_strain(subarray, ts1, ts2, ts3, vp, vs, array_coords,
     ts_ptilde = np.empty((nt, 6))
     for array in (ts_wmag, ts_w1, ts_w2, ts_w3, ts_tilt, ts_dh, ts_sh, ts_s,
                   ts_pred, ts_misfit, ts_m, ts_data, ts_ptilde):
-        array.fill(np.NaN)
+        array.fill(np.nan)
     ts_e = np.empty((nt, 3, 3))
-    ts_e.fill(np.NaN)
+    ts_e.fill(np.nan)
 
     # other matrices
     udif = np.empty((3, _n))
-    udif.fill(np.NaN)
+    udif.fill(np.nan)
 
     # ---------------------------------------------------------------
     # here we define 4x6 be and 3x6 bw matrices.  these map the solution
@@ -487,7 +483,7 @@ def array_rotation_strain(subarray, ts1, ts2, ts3, vp, vs, array_coords,
         misfit_sq = misfit ** 2
         misfit_sq = np.reshape(misfit_sq, (_n, 3)).T
         misfit_sumsq = np.empty(_n)
-        misfit_sumsq.fill(np.NaN)
+        misfit_sumsq.fill(np.nan)
         for i in range(_n):
             misfit_sumsq[i] = misfit_sq[:, i].sum()
         misfit_len = np.sum(np.sqrt(misfit_sumsq))
@@ -511,7 +507,7 @@ def array_rotation_strain(subarray, ts1, ts2, ts3, vp, vs, array_coords,
 
         # Three components of the rotation vector omega (=w here)
         w = np.empty(3)
-        w.fill(np.NaN)
+        w.fill(np.nan)
         w[0] = -ptilde[5]
         w[1] = ptilde[2]
         w[2] = .5 * (ptilde[3] - ptilde[1])
@@ -770,7 +766,13 @@ def array_transff_wavenumber(coords, klim, kstep, coordsys='lonlat'):
     ks = np.transpose(np.vstack((kxgrid.flatten(), kygrid.flatten())))
 
     # z coordinate is not used
-    k_dot_r = np.einsum('ni,mi->nm', ks, coords[:, :2])
+    # Bug with numpy 1.14.0 (https://github.com/numpy/numpy/issues/10343)
+    # Nothing we can do.
+    if np.__version__ == "1.14.0":  # pragma: no cover
+        k_dot_r = np.einsum('ni,mi->nm', ks, coords[:, :2], optimize=False)
+    else:
+        k_dot_r = np.einsum('ni,mi->nm', ks, coords[:, :2])
+
     transff = np.abs(np.sum(np.exp(1j * k_dot_r), axis=1))**2 / len(coords)**2
 
     return transff.reshape(nkx, nky)
@@ -793,9 +795,9 @@ def array_transff_freqslowness(coords, slim, sstep, fmin, fmax, fstep,
     :type fmin: float
     :param fmin: minimum frequency in signal
     :type fmax: float
-    :param fmin: maximum frequency in signal
+    :param fmax: maximum frequency in signal
     :type fstep: float
-    :param fmin: frequency sample distance
+    :param fstep: frequency sample distance
     """
     coords = get_geometry(coords, coordsys)
     if isinstance(slim, float):
@@ -823,12 +825,12 @@ def array_transff_freqslowness(coords, slim, sstep, fmin, fmax, fstep,
         for j, sy in enumerate(np.arange(symin, symax + sstep / 10., sstep)):
             for k, f in enumerate(np.arange(fmin, fmax + fstep / 10., fstep)):
                 _sum = 0j
-                for l in np.arange(len(coords)):
+                for l in np.arange(len(coords)):  # NOQA
                     _sum += np.exp(
                         complex(0., (coords[l, 0] * sx + coords[l, 1] * sy) *
                                 2 * np.pi * f))
                 buff[k] = abs(_sum) ** 2
-            transff[i, j] = cumtrapz(buff, dx=fstep)[-1]
+            transff[i, j] = cumulative_trapezoid(buff, dx=fstep)[-1]
 
     transff /= transff.max()
     return transff
@@ -888,11 +890,10 @@ def array_processing(stream, win_len, win_frac, sll_x, slm_x, sll_y, slm_y,
     :param timestamp: valid values: 'julsec' and 'mlabday'; 'julsec' returns
         the timestamp in seconds since 1970-01-01T00:00:00, 'mlabday'
         returns the timestamp in days (decimals represent hours, minutes
-        and seconds) since '0001-01-01T00:00:00' as needed for matplotlib
-        date plotting (see e.g. matplotlib's num2date)
+        and seconds) since the start of the used matplotlib time epoch
     :type method: int
     :param method: the method to use 0 == bf, 1 == capon
-    :type store: function
+    :type store: callable
     :param store: A custom function which gets called on each iteration. It is
         called with the relative power map and the time offset as first and
         second arguments and the iteration number as third argument. Useful for
@@ -1016,14 +1017,8 @@ def array_processing(stream, win_len, win_frac, sll_x, slm_x, sll_y, slm_y,
     if timestamp == 'julsec':
         pass
     elif timestamp == 'mlabday':
-        # 719163 == days between 1970 and 0001 + 1
-        res[:, 0] = res[:, 0] / (24. * 3600) + 719163
+        res[:, 0] = res[:, 0] / (24. * 3600) + datestr2num('1970-01-01')
     else:
         msg = "Option timestamp must be one of 'julsec', or 'mlabday'"
         raise ValueError(msg)
     return np.array(res)
-
-
-if __name__ == '__main__':
-    import doctest
-    doctest.testmod(exclude_empty=True)

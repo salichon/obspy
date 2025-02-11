@@ -9,23 +9,24 @@ Provides the Channel class.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-from future.utils import python_2_unicode_compatible
+import warnings
 
-from obspy.core.util.obspy_types import FloatWithUncertainties
+from obspy.core.util.decorator import deprecated_keywords
+from obspy.core.util.deprecation_helpers import ObsPyDeprecationWarning
+from obspy.core.util.obspy_types import (
+    FloatWithUncertainties, FloatWithUncertaintiesAndUnit)
 from . import BaseNode
-from .util import Azimuth, ClockDrift, Dip, Distance, Latitude, Longitude
+from .util import (Azimuth, ClockDrift, Dip, Distance, Latitude, Longitude,
+                   Equipment)
 
 
-@python_2_unicode_compatible
 class Channel(BaseNode):
     """
     From the StationXML definition:
         Equivalent to SEED blockette 52 and parent element for the related
         response blockettes.
     """
+    @deprecated_keywords({"equipment": "equipments"})
     def __init__(self, code, location_code, latitude, longitude,
                  elevation, depth, azimuth=None, dip=None, types=None,
                  external_references=None, sample_rate=None,
@@ -34,10 +35,11 @@ class Channel(BaseNode):
                  clock_drift_in_seconds_per_sample=None,
                  calibration_units=None, calibration_units_description=None,
                  sensor=None, pre_amplifier=None, data_logger=None,
-                 equipment=None, response=None, description=None,
+                 equipments=None, response=None, description=None,
                  comments=None, start_date=None, end_date=None,
                  restricted_status=None, alternate_code=None,
-                 historical_code=None, data_availability=None):
+                 historical_code=None, data_availability=None,
+                 identifiers=None, water_level=None, source_id=None):
         """
         :type code: str
         :param code: The SEED channel code for this channel
@@ -58,7 +60,7 @@ class Channel(BaseNode):
         :param azimuth: Azimuth of the sensor in degrees from North, clockwise.
         :type dip: float
         :param dip: Dip of the instrument in degrees, down from horizontal.
-        :type types: list of str
+        :type types: list[str]
         :param types: The type of data this channel collects. Corresponds to
             channel flags in SEED blockette 52. The SEED volume producer could
             use the first letter of an Output value as the SEED channel flag.
@@ -83,9 +85,8 @@ class Channel(BaseNode):
         :param sample_rate_ratio_number_seconds: The sample rate expressed as
             number of samples in a number of seconds. This is the number of
             seconds.
-        :type storage_format: str
-        :param storage_format: The storage format of the recorded data (e.g.
-            SEED)
+        :param storage_format: Ignored. Removed with ObsPy version 1.2.0 in
+            accordance with StationXML 1.1
         :type clock_drift_in_seconds_per_sample: float
         :param clock_drift_in_seconds_per_sample: A tolerance value, measured
             in seconds per sample, used as a threshold for time error detection
@@ -101,8 +102,8 @@ class Channel(BaseNode):
         :param pre_amplifier: The pre-amplifier
         :type data_logger: :class:`~obspy.core.inventory.util.Equipment`
         :param data_logger: The data-logger
-        :type equipment: :class:`~obspy.core.inventory.util.Equipment`
-        :param equipment: Other station equipment
+        :type equipments: list of :class:`~obspy.core.inventory.util.Equipment`
+        :param equipments: Other station equipment
         :type response: :class:`~obspy.core.inventory.response.Response`
         :param response: The response of the channel
         :type description: str
@@ -122,9 +123,22 @@ class Channel(BaseNode):
         :param historical_code: A previously used code if different from the
             current code.
         :type data_availability:
-            :class:`~obspy.core.inventor.util.DataAvailability`
+            :class:`~obspy.core.inventory.util.DataAvailability`
         :param data_availability: Information about time series availability
             for the channel.
+        :type identifiers: list[str], optional
+        :param identifiers: Persistent identifiers for network/station/channel
+            (schema version >=1.1). URIs are in general composed of a 'scheme'
+            and a 'path' (optionally with additional components), the two of
+            which separated by a colon.
+        :type water_level: float, optional
+        :param water_level: Elevation of the water surface in meters for
+            underwater sites, where 0 is sea level. (schema version >=1.1)
+        :type source_id: str, optional
+        :param source_id: A data source identifier in URI form
+            (schema version >=1.1). URIs are in general composed of a 'scheme'
+            and a 'path' (optionally with additional components), the two of
+            which separated by a colon.
         """
         self.location_code = location_code
         self.latitude = latitude
@@ -133,6 +147,7 @@ class Channel(BaseNode):
         self.depth = depth
         self.azimuth = azimuth
         self.dip = dip
+        self.water_level = water_level
         self.types = types or []
         self.external_references = external_references or []
         self.sample_rate = sample_rate
@@ -140,7 +155,10 @@ class Channel(BaseNode):
             sample_rate_ratio_number_samples
         self.sample_rate_ratio_number_seconds = \
             sample_rate_ratio_number_seconds
-        self.storage_format = storage_format
+        if storage_format is not None:
+            msg = ("Attribute 'storage_format' was removed in accordance with "
+                   "StationXML 1.1, ignoring.")
+            warnings.warn(msg, ObsPyDeprecationWarning)
         self.clock_drift_in_seconds_per_sample = \
             clock_drift_in_seconds_per_sample
         self.calibration_units = calibration_units
@@ -148,21 +166,60 @@ class Channel(BaseNode):
         self.sensor = sensor
         self.pre_amplifier = pre_amplifier
         self.data_logger = data_logger
-        self.equipment = equipment
+        if isinstance(equipments, Equipment):
+            equipments = [equipments]
+        self.equipments = equipments or []
         self.response = response
         super(Channel, self).__init__(
             code=code, description=description, comments=comments,
             start_date=start_date, end_date=end_date,
             restricted_status=restricted_status, alternate_code=alternate_code,
             historical_code=historical_code,
-            data_availability=data_availability)
+            data_availability=data_availability, identifiers=identifiers,
+            source_id=source_id)
+
+    @property
+    def storage_format(self):
+        msg = ("Attribute 'storage_format' was removed in accordance with "
+               "StationXML 1.1, returning None.")
+        warnings.warn(msg, ObsPyDeprecationWarning)
+        return None
+
+    @storage_format.setter
+    def storage_format(self, value):
+        msg = ("Attribute 'storage_format' was removed in accordance with "
+               "StationXML 1.1, ignoring.")
+        warnings.warn(msg, ObsPyDeprecationWarning)
+
+    @property
+    def equipment(self):
+        msg = ("Attribute 'equipment' (holding a single Equipment) is "
+               "deprecated in favor of 'equipments' which now holds a list "
+               "of Equipment objects (following changes in StationXML 1.1) "
+               "and might be removed in the future. Returning the first entry "
+               "found in 'equipments'.")
+        warnings.warn(msg, ObsPyDeprecationWarning)
+        equipments = self.equipments
+        if not equipments:
+            return None
+        return equipments[0]
+
+    @equipment.setter
+    def equipment(self, value):
+        msg = ("Attribute 'equipment' (holding a single Equipment) is "
+               "deprecated in favor of 'equipments' which now holds a list "
+               "of Equipment objects (following changes in StationXML 1.1) "
+               "and might be removed in the future. Setting 'equipments' "
+               "attribute with a list with the given item as only entry.")
+        warnings.warn(msg, ObsPyDeprecationWarning)
+        self.equipments = [value]
 
     def __str__(self):
         ret = (
             "Channel '{id}', Location '{location}' {description}\n"
             "{availability}"
             "\tTime range: {start_date} - {end_date}\n"
-            "\tLatitude: {latitude:.2f}, Longitude: {longitude:.2f}, "
+            "\tLatitude: {latitude:.4f}, Longitude: {longitude:.4f}, "
             "Elevation: {elevation:.1f} m, Local Depth: {depth:.1f} m\n"
             "{azimuth}"
             "{dip}"
@@ -277,6 +334,19 @@ class Channel(BaseNode):
             self._dip = Dip(value)
 
     @property
+    def water_level(self):
+        return self._water_level
+
+    @water_level.setter
+    def water_level(self, value):
+        if value is None:
+            self._water_level = None
+        elif isinstance(value, FloatWithUncertaintiesAndUnit):
+            self._water_level = value
+        else:
+            self._water_level = FloatWithUncertaintiesAndUnit(value)
+
+    @property
     def sample_rate(self):
         return self._sample_rate
 
@@ -302,6 +372,23 @@ class Channel(BaseNode):
         else:
             self._clock_drift_in_seconds_per_sample = ClockDrift(value)
 
+    @property
+    def equipments(self):
+        return self._equipments
+
+    @equipments.setter
+    def equipments(self, value):
+        if not hasattr(value, "__iter__"):
+            msg = "equipments needs to be an iterable, e.g. a list."
+            raise ValueError(msg)
+        # make sure to unwind actual iterators, or the just might get exhausted
+        # at some point
+        equipments = [equipment for equipment in value]
+        if any([not isinstance(x, Equipment) for x in equipments]):
+            msg = "equipments can only contain Equipment objects."
+            raise ValueError(msg)
+        self._equipments = equipments
+
     def plot(self, min_freq, output="VEL", start_stage=None, end_stage=None,
              label=None, axes=None, unwrap_phase=False, plot_degrees=False,
              show=True, outfile=None):
@@ -319,6 +406,12 @@ class Channel(BaseNode):
                 velocity, output unit is meters/second
             ``"ACC"``
                 acceleration, output unit is meters/second**2
+            ``"DEF"``
+                default units, the response is calculated in
+                output units/input units (last stage/first stage).
+                Useful if the units for a particular type of sensor (e.g., a
+                pressure sensor) cannot be converted to displacement, velocity
+                or acceleration.
 
         :type start_stage: int
         :param start_stage: Sequence number of first stage that will be used
@@ -328,7 +421,8 @@ class Channel(BaseNode):
             (disregarding all later stages).
         :type label: str
         :param label: Label string for legend.
-        :type axes: list of 2 :class:`matplotlib.axes.Axes`
+        :type axes: list[:class:`matplotlib.axes.Axes`,
+            :class:`matplotlib.axes.Axes`]
         :param axes: List/tuple of two axes instances on which to plot the
             amplitude/phase spectrum. If not specified, a new figure is opened.
         :type unwrap_phase: bool

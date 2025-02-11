@@ -1,5 +1,8 @@
+:orphan:
+
 .. currentmodule:: obspy.core.util
 .. automodule:: obspy.core.util
+    :noindex:
 
     .. comment to end block
 
@@ -20,8 +23,8 @@
        ~misc.to_int_or_zero
        ~obspy_types.Enum
 
-
     .. comment to end block
+
 
     Modules
     -------

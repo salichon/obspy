@@ -2,19 +2,16 @@
 """
 REFTEK130 read support, core routines.
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-from future.utils import native_str
-
 import copy
-import io
 import os
+from io import BytesIO
+from pathlib import Path
 import warnings
 
 import numpy as np
 
 from obspy import Trace, Stream, UTCDateTime
+from obspy.core.util import open_bytes_stream
 from obspy.core.util.obspy_types import ObsPyException
 
 from .packet import (Packet, EHPacket, _initial_unpack_packets, PACKET_TYPES,
@@ -42,14 +39,17 @@ def _is_reftek130(filename):
     bytes) and checks for valid packet type identifiers in the first 20
     expected packet positions.
     """
-    if not os.path.isfile(filename):
-        return False
-    filesize = os.stat(filename).st_size
+    if isinstance(filename, BytesIO):
+        filesize = filename.getbuffer().nbytes
+    else:
+        if not Path(filename).is_file():
+            return False
+        filesize = Path(filename).stat().st_size
     # check if overall file size is a multiple of 1024
     if filesize < 1024 or filesize % 1024 != 0:
         return False
 
-    with open(filename, 'rb') as fp:
+    with open_bytes_stream(filename) as fp:
         # check first 20 expected packets' type header field
         for i in range(20):
             packet_type = fp.read(2).decode("ASCII", "replace")
@@ -63,7 +63,8 @@ def _is_reftek130(filename):
 
 
 def _read_reftek130(filename, network="", location="", component_codes=None,
-                    headonly=False, verbose=False, **kwargs):
+                    headonly=False, verbose=False,
+                    sort_permuted_package_sequence=False, **kwargs):
     """
     Read a REFTEK130 file into an ObsPy Stream.
 
@@ -84,6 +85,11 @@ def _read_reftek130(filename, network="", location="", component_codes=None,
     :type headonly: bool
     :param headonly: Determines whether or not to unpack the data or just
         read the headers.
+    :type sort_permuted_package_sequence: bool
+    :param sort_permuted_package_sequence: Determines whether or not the
+        package list is sorted when a permuted package sequence is encountered.
+        This should only be used if problems occur with files that have a
+        permuted package sequence (showing the related warning message).
     :rtype: :class:`~obspy.core.stream.Stream`
     """
     # Reftek 130 data format stores only the last two digits of the year.  We
@@ -99,7 +105,10 @@ def _read_reftek130(filename, network="", location="", component_codes=None,
         st = rt130.to_stream(
             network=network, location=location,
             component_codes=component_codes, headonly=headonly,
-            verbose=verbose)
+            verbose=verbose,
+            sort_permuted_package_sequence=sort_permuted_package_sequence)
+        st.merge(-1)
+        st.sort()
         return st
     except Reftek130UnpackPacketError:
         msg = ("Unable to read file '{}' as a Reftek130 file. Please contact "
@@ -137,25 +146,29 @@ class Reftek130(object):
 
     @staticmethod
     def from_file(filename):
-        with io.open(filename, "rb") as fh:
+        with open_bytes_stream(filename) as fh:
             string = fh.read()
         rt = Reftek130()
         rt._data = _initial_unpack_packets(string)
         rt._filename = filename
         return rt
 
-    def check_packet_sequence_and_sort(self):
+    def check_packet_sequence_and_sort(self, sort_permuted_package_sequence):
         """
         Checks if packet sequence is ordered. If not, shows a warning and sorts
-        packets by packet sequence. This should ensure that data (DT) packets
-        are properly enclosed by the appropriate event header/trailer (EH/ET)
-        packets.
+        packets by packet sequence if ``sort_permuted_package_sequence=True``.
+        This should ensure that data (DT) packets are properly enclosed by the
+        appropriate event header/trailer (EH/ET) packets.
         """
         diff = np.diff(self._data['packet_sequence'].astype(np.int16))
-        if np.any(diff < 1):
+        # rollover from 9999 to 0 is not a packet sequence jump..
+        jump = (diff < 1) & (diff != -9999)
+        if np.any(jump):
             msg = ("Detected permuted packet sequence, sorting.")
             warnings.warn(msg)
-            self._data.sort(order=native_str("packet_sequence"))
+            if sort_permuted_package_sequence:
+                self._data.sort(order=[
+                    key for key in ("packet_sequence", "time")])
 
     def check_packet_sequence_contiguous(self):
         """
@@ -173,7 +186,7 @@ class Reftek130(object):
         Checks if there are packets of a type that is currently not implemented
         and drop them showing a warning message.
         """
-        is_implemented = np.in1d(
+        is_implemented = np.isin(
             self._data['packet_type'],
             [x.encode() for x in PACKET_TYPES_IMPLEMENTED])
         # if all packets are of a type that is implemented, the nothing to do..
@@ -193,7 +206,8 @@ class Reftek130(object):
         self._data = self._data[is_implemented]
 
     def to_stream(self, network="", location="", component_codes=None,
-                  headonly=False, verbose=False):
+                  headonly=False, verbose=False,
+                  sort_permuted_package_sequence=False):
         """
         :type headonly: bool
         :param headonly: Determines whether or not to unpack the data or just
@@ -204,7 +218,7 @@ class Reftek130(object):
         if not len(self._data):
             msg = "No packet data in Reftek130 object (file: {})"
             raise Reftek130Exception(msg.format(self._filename))
-        self.check_packet_sequence_and_sort()
+        self.check_packet_sequence_and_sort(sort_permuted_package_sequence)
         self.check_packet_sequence_contiguous()
         self.drop_not_implemented_packet_types()
         if not len(self._data):
@@ -240,11 +254,15 @@ class Reftek130(object):
                 eh = EHPacket(eh_packets[0])
             else:
                 eh = EHPacket(et_packets[0])
-            # only "C0" encoding supported right now
+            # only C0, C2, 16, 32 encodings supported right now
             if eh.data_format == b"C0":
                 encoding = 'C0'
             elif eh.data_format == b"C2":
                 encoding = 'C2'
+            elif eh.data_format == b"16":
+                encoding = '16'
+            elif eh.data_format == b"32":
+                encoding = '32'
             else:
                 msg = ("Reftek data encoding '{}' not implemented yet. Please "
                        "open an issue on GitHub and provide a small (< 50kb) "
@@ -257,7 +275,10 @@ class Reftek130(object):
                 "location": location, "sampling_rate": eh.sampling_rate,
                 "reftek130": eh._to_dict()}
             delta = 1.0 / eh.sampling_rate
-            for channel_number in np.unique(data['channel_number']):
+            delta_nanoseconds = int(delta * 1e9)
+            inds_dt = data['packet_type'] == b"DT"
+            data_channels = np.unique(data[inds_dt]['channel_number'])
+            for channel_number in data_channels:
                 inds = data['channel_number'] == channel_number
                 # channel number of EH/ET packets also equals zero (one of the
                 # three unused bytes in the extended header of EH/ET packets)
@@ -266,18 +287,17 @@ class Reftek130(object):
 
                 # split into contiguous blocks, i.e. find gaps. packet sequence
                 # was sorted already..
-                endtimes = (packets[:-1]["time"] +
-                            packets[:-1]["number_of_samples"] * delta)
+                endtimes = (
+                    packets[:-1]["time"] +
+                    packets[:-1]["number_of_samples"].astype(np.int64) *
+                    delta_nanoseconds)
                 # check if next starttime matches seamless to last chunk
-                # 1e-3 seconds == 1 millisecond is the smallest time difference
-                # reftek130 format can represent, so anything larger or equal
-                # means a gap/overlap.
-                # for now be conservative and check even more rigorous against
-                # 1e-4 to be on the safe side, but in the gapless data example
-                # the differences are always 0 or -2e-7 (for POSIX timestamps
-                # of order 1e9) which seems like a floating point accuracy
-                # issue for np.float64.
-                gaps = np.abs(packets[1:]["time"] - endtimes) > 1e-4
+                # 1e-3 seconds == 1e6 nanoseconds is the smallest time
+                # difference reftek130 format can represent, so anything larger
+                # or equal means a gap/overlap.
+                time_diffs_milliseconds_abs = np.abs(
+                    packets[1:]["time"] - endtimes) / 1000000
+                gaps = time_diffs_milliseconds_abs >= 1
                 if np.any(gaps):
                     gap_split_indices = np.nonzero(gaps)[0] + 1
                     contiguous = np.array_split(packets, gap_split_indices)
@@ -291,7 +311,42 @@ class Reftek130(object):
                         sample_data = np.array([], dtype=np.int32)
                         npts = packets_["number_of_samples"].sum()
                     else:
-                        sample_data = _unpack_C0_C2_data(packets_, encoding)
+                        if encoding in ('C0', 'C2'):
+                            sample_data = _unpack_C0_C2_data(packets_,
+                                                             encoding)
+                        elif encoding in ('16', '32'):
+                            # rt130 stores in big endian
+                            dtype = {'16': '>i2', '32': '>i4'}[encoding]
+                            # just fix endianness and use correct dtype
+                            sample_data = np.require(
+                                packets_['payload'],
+                                requirements=['C_CONTIGUOUS'])
+                            # either int16 or int32
+                            sample_data = sample_data.view(dtype)
+                            # account for number of samples, i.e. some packets
+                            # might not use the full payload size but have
+                            # empty parts at the end that need to be cut away
+                            number_of_samples_max = sample_data.shape[1]
+                            sample_data = sample_data.flatten()
+                            # go through packets starting at the back,
+                            # otherwise indices of later packets would change
+                            # while looping
+                            for ind, num_samps in reversed([
+                                    (ind, num_samps) for ind, num_samps in
+                                    enumerate(packets_["number_of_samples"])
+                                    if num_samps != number_of_samples_max]):
+                                # looping backwards we can easily find the
+                                # start of each packet, since the earlier
+                                # packets are still untouched and at maximum
+                                # sample length in our big array with all
+                                # packets
+                                start_of_packet = ind * number_of_samples_max
+                                start_empty_part = start_of_packet + num_samps
+                                end_empty_part = (start_of_packet +
+                                                  number_of_samples_max)
+                                sample_data = np.delete(
+                                    sample_data,
+                                    slice(start_empty_part, end_empty_part))
                         npts = len(sample_data)
 
                     tr = Trace(data=sample_data, header=copy.deepcopy(header))
@@ -300,7 +355,7 @@ class Reftek130(object):
                     tr.stats.reftek130['channel_number'] = channel_number
                     if headonly:
                         tr.stats.npts = npts
-                    tr.stats.starttime = UTCDateTime(starttime)
+                    tr.stats.starttime = UTCDateTime(ns=starttime)
                     # if component codes were explicitly provided, use them
                     # together with the stream label
                     if component_codes is not None:
@@ -330,9 +385,9 @@ class Reftek130(object):
                             assert npts == len(sample_data)
                         if npts_last:
                             assert tr.stats.endtime == UTCDateTime(
-                                t_last + (npts_last - 1) * delta)
+                                ns=t_last) + (npts_last - 1) * delta
                         if npts:
-                            assert tr.stats.endtime == UTCDateTime(
+                            assert tr.stats.endtime == (
                                 tr.stats.starttime + (npts - 1) * delta)
                     except AssertionError:
                         msg = ("Reftek file has a trace with an inconsistent "

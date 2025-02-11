@@ -9,42 +9,55 @@ FDSN Web service client for ObsPy.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-from future.utils import PY2, native_str
-
-import collections
+import collections.abc
 import copy
 import gzip
 import io
 import os
 import re
-from socket import timeout as socket_timeout
 import textwrap
 import threading
 import warnings
 from collections import OrderedDict
+from http.client import HTTPException, IncompleteRead
+from urllib.parse import urlparse
+# since python 3.10 socket.timeout is just an alias for builtin TimeoutError
+# and python docs state that it is a "deprecated alias", so that alias might
+# get removed at some point (or probably just kept forever), so be ready for it
+# here
+try:
+    from socket import timeout as socket_timeout
+except ImportError:
+    socket_timeout = TimeoutError
 
 from lxml import etree
 
 import obspy
 from obspy import UTCDateTime, read_inventory
-from obspy.core.compatibility import urlparse
+from obspy.core.util.deprecation_helpers import ObsPyDeprecationWarning
 from .header import (DEFAULT_PARAMETERS, DEFAULT_USER_AGENT, FDSNWS,
-                     OPTIONAL_PARAMETERS, PARAMETER_ALIASES, URL_MAPPINGS,
-                     WADL_PARAMETERS_NOT_TO_BE_PARSED, FDSNException,
-                     FDSNRedirectException, FDSNNoDataException)
+                     OPTIONAL_PARAMETERS, PARAMETER_ALIASES,
+                     URL_DEFAULT_SUBPATH, URL_MAPPINGS, URL_MAPPING_SUBPATHS,
+                     WADL_PARAMETERS_NOT_TO_BE_PARSED, DEFAULT_SERVICES,
+                     FDSNException, FDSNRedirectException, FDSNNoDataException,
+                     FDSNTimeoutException,
+                     FDSNNoAuthenticationServiceException,
+                     FDSNBadRequestException, FDSNNoServiceException,
+                     FDSNInternalServerException,
+                     FDSNNotImplementedException,
+                     FDSNBadGatewayException,
+                     FDSNTooManyRequestsException,
+                     FDSNRequestTooLargeException,
+                     FDSNServiceUnavailableException,
+                     FDSNUnauthorizedException,
+                     FDSNForbiddenException,
+                     FDSNDoubleAuthenticationException,
+                     FDSNInvalidRequestException)
 from .wadl_parser import WADLParser
 
-if PY2:
-    from urllib import urlencode
-    import urllib2 as urllib_request
-    import Queue as queue
-else:
-    from urllib.parse import urlencode
-    import urllib.request as urllib_request
-    import queue
+from urllib.parse import urlencode
+import urllib.request as urllib_request
+import queue
 
 
 DEFAULT_SERVICE_VERSIONS = {'dataselect': 1, 'station': 1, 'event': 1}
@@ -55,6 +68,7 @@ class CustomRedirectHandler(urllib_request.HTTPRedirectHandler):
     Custom redirection handler to also do it for POST requests which the
     standard library does not do by default.
     """
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         """
         Copied and modified from the standard library.
@@ -85,6 +99,7 @@ class NoRedirectionHandler(urllib_request.HTTPRedirectHandler):
     """
     Handler that does not direct!
     """
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         """
         Copied and modified from the standard library.
@@ -106,11 +121,13 @@ class Client(object):
     # Dictionary caching any discovered service. Therefore repeatedly
     # initializing a client with the same base URL is cheap.
     __service_discovery_cache = {}
-
+    #: Regex for UINT8
     RE_UINT8 = r'(?:25[0-5]|2[0-4]\d|[0-1]?\d{1,2})'
+    #: Regex for HEX4
     RE_HEX4 = r'(?:[\d,a-f]{4}|[1-9,a-f][0-9,a-f]{0,2}|0)'
-
+    #: Regex for IPv4
     RE_IPv4 = r'(?:' + RE_UINT8 + r'(?:\.' + RE_UINT8 + r'){3})'
+    #: Regex for IPv6
     RE_IPv6 = \
         r'(?:\[' + RE_HEX4 + r'(?::' + RE_HEX4 + r'){7}\]' + \
         r'|\[(?:' + RE_HEX4 + r':){0,5}' + RE_HEX4 + r'::\]' + \
@@ -120,13 +137,13 @@ class Client(object):
         r'|\[' + RE_HEX4 + r':' + \
         r'(?:' + RE_HEX4 + r':|:' + RE_HEX4 + r'){0,4}' + \
         r':' + RE_HEX4 + r'\])'
-
+    #: Regex for checking the validity of URLs
     URL_REGEX = r'https?://' + \
                 r'(' + RE_IPv4 + \
                 r'|' + RE_IPv6 + \
                 r'|localhost' + \
-                r'|\w+' + \
-                r'|(?:\w(?:[\w-]{0,61}[\w])?\.){1,}([a-z]{2,6}))' + \
+                r'|\w(?:[\w-]*\w)?' + \
+                r'|(?:\w(?:[\w-]{0,61}[\w])?\.){1,}([a-z][a-z0-9-]{1,62}))' + \
                 r'(?::\d{2,5})?' + \
                 r'(/[\w\.-]+)*/?$'
 
@@ -137,14 +154,14 @@ class Client(object):
         else:
             return False
 
-    def __init__(self, base_url="IRIS", major_versions=None, user=None,
+    def __init__(self, base_url="EARTHSCOPE", major_versions=None, user=None,
                  password=None, user_agent=DEFAULT_USER_AGENT, debug=False,
                  timeout=120, service_mappings=None, force_redirect=False,
-                 eida_token=None):
+                 eida_token=None, _discover_services=True, use_gzip=True):
         """
         Initializes an FDSN Web Service client.
 
-        >>> client = Client("IRIS")
+        >>> client = Client("EARTHSCOPE")
         >>> print(client)  # doctest: +ELLIPSIS +NORMALIZE_WHITESPACE
         FDSN Webservice Client (base url: http://service.iris.edu)
         Available Services: 'dataselect' (v...), 'event' (v...),
@@ -202,24 +219,48 @@ class Client(object):
             used. This mechanism is only available on select EIDA nodes. The
             token can be provided in form of the PGP message as a string, or
             the filename of a local file with the PGP message in it.
+        :type _discover_services: bool
+        :param _discover_services: By default the client will query information
+            about the FDSN endpoint when it is instantiated.  In certain cases,
+            this may place a heavy load on the FDSN service provider.  If set
+            to ``False``, no service discovery is performed and default
+            parameter support is assumed. This parameter is experimental and
+            will likely be removed in the future.
+        :type use_gzip: bool
+        :param use_gzip: Can be set to ``False`` to opt out of gzip
+            compression, i.e. not tell the server that gzip compressed response
+            is acceptable which should make the server not try gzip compression
+            on results. Can be used if servers experience server side issues
+            with gzip compression but results in downloads being larger in
+            size.
         """
         self.debug = debug
         self.user = user
         self.timeout = timeout
         self._force_redirect = force_redirect
+        self.use_gzip = use_gzip
 
         # Cache for the webservice versions. This makes interactive use of
         # the client more convenient.
         self.__version_cache = {}
 
+        if base_url.upper() == 'IRIS':
+            base_url = 'EARTHSCOPE'
+            msg = ("IRIS is now EarthScope, please consider changing the FDSN "
+                   "client short URL to 'EARTHSCOPE'.")
+            warnings.warn(msg, ObsPyDeprecationWarning)
+
         if base_url.upper() in URL_MAPPINGS:
-            base_url = URL_MAPPINGS[base_url.upper()]
+            url_mapping = base_url.upper()
+            base_url = URL_MAPPINGS[url_mapping]
+            url_subpath = URL_MAPPING_SUBPATHS.get(
+                url_mapping, URL_DEFAULT_SUBPATH)
         else:
             if base_url.isalpha():
                 msg = "The FDSN service shortcut `{}` is unknown."\
                       .format(base_url)
                 raise ValueError(msg)
-
+            url_subpath = URL_DEFAULT_SUBPATH
         # Make sure the base_url does not end with a slash.
         base_url = base_url.strip("/")
         # Catch invalid URLs to avoid confusing error messages
@@ -229,6 +270,7 @@ class Client(object):
             raise ValueError(msg)
 
         self.base_url = base_url
+        self.url_subpath = url_subpath
 
         self._set_opener(user, password)
 
@@ -253,7 +295,10 @@ class Client(object):
                     print("\t%s: '%s'" % (key, value))
             print("Request Headers: %s" % str(self.request_headers))
 
-        self._discover_services()
+        if _discover_services:
+            self._discover_services()
+        else:
+            self.services = DEFAULT_SERVICES.copy()
 
         # Use EIDA token if provided - this requires setting new url openers.
         #
@@ -268,7 +313,7 @@ class Client(object):
             if user is not None or password is not None:
                 msg = ("EIDA authentication token provided, but "
                        "user and password are also given.")
-                raise FDSNException(msg)
+                raise FDSNDoubleAuthenticationException(msg)
             self.set_eida_token(eida_token)
 
     @property
@@ -288,9 +333,10 @@ class Client(object):
         :type password: str
         :param password: Password for given user name.
         """
+        self.user = user
         self._set_opener(user, password)
 
-    def set_eida_token(self, token):
+    def set_eida_token(self, token, validate=True):
         """
         Fetch user and password from the server using the provided token,
         resulting in subsequent web service requests for waveforms being
@@ -307,8 +353,11 @@ class Client(object):
             This mechanism is only available on select EIDA nodes. The token
             can be provided in form of the PGP message as a string, or the
             filename of a local file with the PGP message in it.
+        :type validate: bool
+        :param validate: Whether to sanity check the token before sending it to
+            the EIDA server or not.
         """
-        user, password = self._resolve_eida_token(token)
+        user, password = self._resolve_eida_token(token, validate=validate)
         self.set_credentials(user, password)
 
     def _set_opener(self, user, password):
@@ -332,7 +381,7 @@ class Client(object):
         if self.debug:
             print('Installed new opener with handlers: {!s}'.format(handlers))
 
-    def _resolve_eida_token(self, token):
+    def _resolve_eida_token(self, token, validate=True):
         """
         Use the token to get credentials.
         """
@@ -340,7 +389,7 @@ class Client(object):
             msg = ("EIDA token authentication requested but service at '{}' "
                    "does not specify /dataselect/auth in the "
                    "dataselect/application.wadl.").format(self.base_url)
-            raise FDSNException(msg)
+            raise FDSNNoAuthenticationServiceException(msg)
 
         token_file = None
         # check if there's a local file that matches the provided string
@@ -349,20 +398,22 @@ class Client(object):
             with open(token_file, 'rb') as fh:
                 token = fh.read().decode()
         # sanity check on the token
-        if not _validate_eida_token(token):
-            if token_file:
-                msg = ("Read EIDA token from file '{}' but it does not "
-                       "seem to contain a valid PGP message.").format(
-                            token_file)
-            else:
-                msg = ("EIDA token does not seem to be a valid PGP message. "
-                       "If you passed a filename, make sure the file "
-                       "actually exists.")
-            raise ValueError(msg)
+        if validate:
+            if not _validate_eida_token(token):
+                if token_file:
+                    msg = ("Read EIDA token from file '{}' but it does not "
+                           "seem to contain a valid PGP message.").format(
+                               token_file)
+                else:
+                    msg = ("EIDA token does not seem to be a valid PGP "
+                           "message. If you passed a filename, make sure the "
+                           "file actually exists.")
+                raise ValueError(msg)
 
         # force https so that we don't send around tokens unsecurely
-        url = 'https://{}/fdsnws/dataselect/1/auth'.format(
-            urlparse(self.base_url).netloc + urlparse(self.base_url).path)
+        url = 'https://{}{}/dataselect/1/auth'.format(
+            urlparse(self.base_url).netloc + urlparse(self.base_url).path,
+            self.url_subpath)
         # paranoid: check again that we only send the token to https
         if urlparse(url).scheme != "https":
             msg = 'This should not happen, please file a bug report.'
@@ -370,7 +421,8 @@ class Client(object):
 
         # Already does the error checking with fdsnws semantics.
         response = self._download(url=url, data=token.encode(),
-                                  use_gzip=True, return_string=True)
+                                  return_string=True,
+                                  content_type='application/octet-stream')
 
         user, password = response.decode().split(':')
         if self.debug:
@@ -383,18 +435,19 @@ class Client(object):
                    latitude=None, longitude=None, minradius=None,
                    maxradius=None, mindepth=None, maxdepth=None,
                    minmagnitude=None, maxmagnitude=None, magnitudetype=None,
-                   includeallorigins=None, includeallmagnitudes=None,
-                   includearrivals=None, eventid=None, limit=None, offset=None,
-                   orderby=None, catalog=None, contributor=None,
-                   updatedafter=None, filename=None, **kwargs):
+                   eventtype=None, includeallorigins=None,
+                   includeallmagnitudes=None, includearrivals=None,
+                   eventid=None, limit=None, offset=None, orderby=None,
+                   catalog=None, contributor=None, updatedafter=None,
+                   filename=None, **kwargs):
         """
         Query the event service of the client.
 
-        >>> client = Client("IRIS")
+        >>> client = Client("EARTHSCOPE")
         >>> cat = client.get_events(eventid=609301)
         >>> print(cat)
         1 Event(s) in Catalog:
-        1997-10-14T09:53:11.070000Z | -22.145, -176.720 | 7.8 mw
+        1997-10-14T09:53:11.070000Z | -22.145, -176.720 | 7.8 ...
 
         The return value is a :class:`~obspy.core.event.Catalog` object
         which can contain any number of events.
@@ -405,9 +458,9 @@ class Client(object):
         ...                         catalog="ISC")
         >>> print(cat)
         3 Event(s) in Catalog:
-        2001-01-07T02:55:59.290000Z |  +9.801,  +76.548 | 4.9 mb
-        2001-01-07T02:35:35.170000Z | -21.291,  -68.308 | 4.4 mb
-        2001-01-07T00:09:25.630000Z | +22.946, -107.011 | 4.0 mb
+        2001-01-07T02:55:59.290000Z |  +9.801,  +76.548 | 4.9 ...
+        2001-01-07T02:35:35.170000Z | -21.291,  -68.308 | 4.4 ...
+        2001-01-07T00:09:25.630000Z | +22.946, -107.011 | 4.0 ...
 
         :type starttime: :class:`~obspy.core.utcdatetime.UTCDateTime`, optional
         :param starttime: Limit to events on or after the specified start time.
@@ -428,7 +481,7 @@ class Client(object):
         :type latitude: float, optional
         :param latitude: Specify the latitude to be used for a radius search.
         :type longitude: float, optional
-        :param longitude: Specify the longitude to the used for a radius
+        :param longitude: Specify the longitude to be used for a radius
             search.
         :type minradius: float, optional
         :param minradius: Limit to events within the specified minimum number
@@ -453,6 +506,12 @@ class Client(object):
         :type magnitudetype: str, optional
         :param magnitudetype: Specify a magnitude type to use for testing the
             minimum and maximum limits.
+        :type eventtype: str, optional
+        :param eventtype: Limit to events with a specified event type.
+            Multiple types are comma-separated (e.g.,
+            ``"earthquake,quarry blast"``). Allowed values are from QuakeML.
+            See :const:`obspy.core.event.header.EventType` for a list of
+            allowed event types.
         :type includeallorigins: bool, optional
         :param includeallorigins: Specify if all origins for the event should
             be included, default is data center dependent but is suggested to
@@ -463,9 +522,9 @@ class Client(object):
             suggested to be the preferred magnitude only.
         :type includearrivals: bool, optional
         :param includearrivals: Specify if phase arrivals should be included.
-        :type eventid: str (or int, dependent on data center), optional
+        :type eventid: str or int, optional
         :param eventid: Select a specific event by ID; event identifiers are
-            data center specific.
+            data center specific (String or Integer).
         :type limit: int, optional
         :param limit: Limit the results to the specified number of events.
         :type offset: int, optional
@@ -502,7 +561,7 @@ class Client(object):
         """
         if "event" not in self.services:
             msg = "The current client does not have an event service."
-            raise ValueError(msg)
+            raise FDSNNoServiceException(msg)
 
         locs = locals()
         setup_query_dict('event', locs, kwargs)
@@ -532,7 +591,7 @@ class Client(object):
         """
         Query the station service of the FDSN client.
 
-        >>> client = Client("IRIS")
+        >>> client = Client("EARTHSCOPE")
         >>> starttime = UTCDateTime("2001-01-01")
         >>> endtime = UTCDateTime("2001-01-02")
         >>> inventory = client.get_stations(network="IU", station="A*",
@@ -654,7 +713,7 @@ class Client(object):
         :type latitude: float
         :param latitude: Specify the latitude to be used for a radius search.
         :type longitude: float
-        :param longitude: Specify the longitude to the used for a radius
+        :param longitude: Specify the longitude to be used for a radius
             search.
         :type minradius: float
         :param minradius: Limit results to stations within the specified
@@ -686,7 +745,7 @@ class Client(object):
             the raw data from the webservices.
         :type format: str
         :param format: The format in which to request station information.
-            ``"xml"`` (StationXML) or ``"text"`` (FDSN station test format).
+            ``"xml"`` (StationXML) or ``"text"`` (FDSN station text format).
             XML has more information but text is much faster.
 
         :rtype: :class:`~obspy.core.inventory.inventory.Inventory`
@@ -700,7 +759,7 @@ class Client(object):
         """
         if "station" not in self.services:
             msg = "The current client does not have a station service."
-            raise ValueError(msg)
+            raise FDSNNoServiceException(msg)
 
         locs = locals()
         setup_query_dict('station', locs, kwargs)
@@ -715,7 +774,12 @@ class Client(object):
             data_stream.close()
         else:
             # This works with XML and StationXML data.
-            inventory = read_inventory(data_stream)
+            if format is None or format == 'xml':
+                inventory = read_inventory(data_stream, format='STATIONXML')
+            elif format == 'text':
+                inventory = read_inventory(data_stream, format='STATIONTXT')
+            else:
+                inventory = read_inventory(data_stream)
             data_stream.close()
             return inventory
 
@@ -726,7 +790,7 @@ class Client(object):
         """
         Query the dataselect service of the client.
 
-        >>> client = Client("IRIS")
+        >>> client = Client("EARTHSCOPE")
         >>> t1 = UTCDateTime("2010-02-27T06:30:00.000")
         >>> t2 = t1 + 5
         >>> st = client.get_waveforms("IU", "ANMO", "00", "LHZ", t1, t2)
@@ -758,7 +822,7 @@ class Client(object):
 
             from obspy import UTCDateTime
             from obspy.clients.fdsn import Client
-            client = Client("IRIS")
+            client = Client("EARTHSCOPE")
             t = UTCDateTime("2012-12-14T10:36:01.6Z")
             st = client.get_waveforms("TA", "E42A", "*", "BH?", t+300, t+400,
                                       attach_response=True)
@@ -813,7 +877,7 @@ class Client(object):
         """
         if "dataselect" not in self.services:
             msg = "The current client does not have a dataselect service."
-            raise ValueError(msg)
+            raise FDSNNoServiceException(msg)
 
         locs = locals()
         setup_query_dict('dataselect', locs, kwargs)
@@ -838,6 +902,7 @@ class Client(object):
             if attach_response:
                 self._attach_responses(st)
             self._attach_dataselect_url_to_stream(st)
+            st.trim(starttime, endtime)
             return st
 
     def _attach_responses(self, st):
@@ -892,7 +957,7 @@ class Client(object):
             - a string with the path to a local file with the request
             - an open file handle (or file-like object) with the request
 
-        >>> client = Client("IRIS")
+        >>> client = Client("EARTHSCOPE")
         >>> t1 = UTCDateTime("2010-02-27T06:30:00.000")
         >>> t2 = t1 + 1
         >>> t3 = t1 + 3
@@ -944,7 +1009,7 @@ class Client(object):
 
             from obspy import UTCDateTime
             from obspy.clients.fdsn import Client
-            client = Client("IRIS")
+            client = Client("EARTHSCOPE")
             t = UTCDateTime("2012-12-14T10:36:01.6Z")
             t1 = t + 300
             t2 = t + 400
@@ -961,7 +1026,7 @@ class Client(object):
             information to each trace. This can be used to remove response
             using :meth:`~obspy.core.stream.Stream.remove_response`.
 
-        :type bulk: str, file or list of lists
+        :type bulk: str, file or list[list]
         :param bulk: Information about the requested data. See above for
             details.
         :type quality: str, optional
@@ -994,7 +1059,7 @@ class Client(object):
         """
         if "dataselect" not in self.services:
             msg = "The current client does not have a dataselect service."
-            raise ValueError(msg)
+            raise FDSNNoServiceException(msg)
 
         arguments = OrderedDict(
             quality=quality,
@@ -1005,8 +1070,8 @@ class Client(object):
 
         url = self._build_url("dataselect", "query")
 
-        data_stream = self._download(url,
-                                     data=bulk)
+        data_stream = self._download(
+            url, data=bulk, content_type='text/plain')
         data_stream.seek(0, 0)
         if filename:
             self._write_to_file_object(filename, data_stream)
@@ -1020,8 +1085,13 @@ class Client(object):
             return st
 
     def get_stations_bulk(self, bulk, level=None, includerestricted=None,
-                          includeavailability=None, filename=None, **kwargs):
-        r"""
+                          includeavailability=None, filename=None,
+                          minlatitude=None, maxlatitude=None,
+                          minlongitude=None, maxlongitude=None, latitude=None,
+                          longitude=None, minradius=None, maxradius=None,
+                          updatedafter=None, matchtimeseries=None, format=None,
+                          **kwargs):
+        """
         Query the station service of the client. Bulk request.
 
         Send a bulk request for stations to the server. `bulk` can either be
@@ -1044,7 +1114,7 @@ class Client(object):
             - a string with the path to a local file with the request
             - an open file handle (or file-like object) with the request
 
-        >>> client = Client("IRIS")
+        >>> client = Client("EARTHSCOPE")
         >>> t1 = UTCDateTime("2010-02-27T06:30:00.000")
         >>> t2 = t1 + 1
         >>> t3 = t1 + 3
@@ -1055,7 +1125,7 @@ class Client(object):
         >>> print(inv)  # doctest: +ELLIPSIS +NORMALIZE_WHITESPACE
         Inventory created at ...
             Created by: IRIS WEB SERVICE: fdsnws-station | version: ...
-                        ...
+
             Sending institution: IRIS-DMC (IRIS-DMC)
             Contains:
                 Networks (2):
@@ -1064,6 +1134,7 @@ class Client(object):
                     GR.GRA1 (GRAFENBERG ARRAY, BAYERN)
                     IU.ANMO (Albuquerque, New Mexico, USA)
                 Channels (0):
+
         >>> inv.plot()  # doctest: +SKIP
 
         .. plot::
@@ -1071,7 +1142,7 @@ class Client(object):
             from obspy import UTCDateTime
             from obspy.clients.fdsn import Client
 
-            client = Client("IRIS")
+            client = Client("EARTHSCOPE")
             t1 = UTCDateTime("2010-02-27T06:30:00.000")
             t2 = t1 + 1
             t3 = t1 + 3
@@ -1085,7 +1156,7 @@ class Client(object):
         >>> print(inv)  # doctest: +ELLIPSIS +NORMALIZE_WHITESPACE
         Inventory created at ...
             Created by: IRIS WEB SERVICE: fdsnws-station | version: ...
-                        ...
+
             Sending institution: IRIS-DMC (IRIS-DMC)
             Contains:
                 Networks (2):
@@ -1114,9 +1185,34 @@ class Client(object):
                     GR.GRA1..BHE, GR.GRA1..BHN, GR.GRA1..BHZ, IU.ANMO.00.BHZ,
                     IU.ANMO.10.BHZ
 
-        :type bulk: str, file or list of lists
+        :type bulk: str, file or list[list]
         :param bulk: Information about the requested data. See above for
             details.
+        :type minlatitude: float
+        :param minlatitude: Limit to stations with a latitude larger than the
+            specified minimum.
+        :type maxlatitude: float
+        :param maxlatitude: Limit to stations with a latitude smaller than the
+            specified maximum.
+        :type minlongitude: float
+        :param minlongitude: Limit to stations with a longitude larger than the
+            specified minimum.
+        :type maxlongitude: float
+        :param maxlongitude: Limit to stations with a longitude smaller than
+            the specified maximum.
+        :type latitude: float
+        :param latitude: Specify the latitude to be used for a radius search.
+        :type longitude: float
+        :param longitude: Specify the longitude to be used for a radius
+            search.
+        :type minradius: float
+        :param minradius: Limit results to stations within the specified
+            minimum number of degrees from the geographic point defined by the
+            latitude and longitude parameters.
+        :type maxradius: float
+        :param maxradius: Limit results to stations within the specified
+            maximum number of degrees from the geographic point defined by the
+            latitude and longitude parameters.
         :type level: str
         :param level: Specify the level of detail for the results ("network",
             "station", "channel", "response"), e.g. specify "response" to get
@@ -1127,10 +1223,20 @@ class Client(object):
         :type includeavailability: bool
         :param includeavailability: Specify if results should include
             information about time series data availability.
+        :type updatedafter: :class:`~obspy.core.utcdatetime.UTCDateTime`
+        :param updatedafter: Limit to metadata updated after specified date;
+            updates are data center specific.
+        :type matchtimeseries: bool
+        :param matchtimeseries: Only include data for which matching time
+            series data is available.
         :type filename: str or file
         :param filename: If given, the downloaded data will be saved there
             instead of being parsed to an ObsPy object. Thus it will contain
             the raw data from the webservices.
+        :type format: str
+        :param format: The format in which to request station information.
+            ``"xml"`` (StationXML) or ``"text"`` (FDSN station text format).
+            XML has more information but text is much faster.
 
         Any additional keyword arguments will be passed to the webservice as
         additional arguments. If you pass one of the default parameters and the
@@ -1140,19 +1246,30 @@ class Client(object):
         """
         if "station" not in self.services:
             msg = "The current client does not have a station service."
-            raise ValueError(msg)
+            raise FDSNNoServiceException(msg)
 
         arguments = OrderedDict(
+            minlatitude=minlatitude,
+            maxlatitude=maxlatitude,
+            minlongitude=minlongitude,
+            maxlongitude=maxlongitude,
+            latitude=latitude,
+            longitude=longitude,
+            minradius=minradius,
+            maxradius=maxradius,
             level=level,
-            includerestriced=includerestricted,
-            includeavailability=includeavailability
+            includerestricted=includerestricted,
+            includeavailability=includeavailability,
+            updatedafter=updatedafter,
+            matchtimeseries=matchtimeseries,
+            format=format
         )
         bulk = get_bulk_string(bulk, arguments)
 
         url = self._build_url("station", "query")
 
-        data_stream = self._download(url,
-                                     data=bulk)
+        data_stream = self._download(
+            url, data=bulk, content_type='text/plain')
         data_stream.seek(0, 0)
         if filename:
             self._write_to_file_object(filename, data_stream)
@@ -1160,7 +1277,12 @@ class Client(object):
             return
         else:
             # Works with text and StationXML data.
-            inv = obspy.read_inventory(data_stream)
+            if format is None or format == 'xml':
+                inv = read_inventory(data_stream, format='STATIONXML')
+            elif format == 'text':
+                inv = read_inventory(data_stream, format='STATIONTXT')
+            else:
+                inv = read_inventory(data_stream)
             data_stream.close()
             return inv
 
@@ -1213,7 +1335,7 @@ class Client(object):
             this_type = service_params[key]["type"]
 
             # Try to decode to be able to work with bytes.
-            if this_type is native_str:
+            if this_type is str:
                 try:
                     value = value.decode()
                 except AttributeError:
@@ -1374,9 +1496,18 @@ class Client(object):
 
         print("\n".join(msg))
 
-    def _download(self, url, return_string=False, data=None, use_gzip=True):
+    def _download(self, url, return_string=False, data=None, use_gzip=None,
+                  content_type=None):
+        # make it possible to have a default for gzip set on client
+        # initialization but also be able to override it here (for dataselect
+        # requests)
+        if use_gzip is None:
+            use_gzip = self.use_gzip
+        headers = self.request_headers.copy()
+        if content_type:
+            headers['Content-Type'] = content_type
         code, data = download_url(
-            url, opener=self._url_opener, headers=self.request_headers,
+            url, opener=self._url_opener, headers=headers,
             debug=self.debug, return_string=return_string, data=data,
             timeout=self.timeout, use_gzip=use_gzip)
         raise_on_error(code, data)
@@ -1395,7 +1526,8 @@ class Client(object):
                 resource_type = "queryauth"
         return build_url(self.base_url, service, self.major_versions[service],
                          resource_type, parameters,
-                         service_mappings=self._service_mappings)
+                         service_mappings=self._service_mappings,
+                         subpath=self.url_subpath)
 
     def _discover_services(self):
         """
@@ -1414,7 +1546,6 @@ class Client(object):
         if "event" in services:
             urls.append(self._build_url("event", "catalogs"))
             urls.append(self._build_url("event", "contributors"))
-
         # Access cache if available.
         url_hash = frozenset(urls)
         if url_hash in self.__service_discovery_cache:
@@ -1438,7 +1569,7 @@ class Client(object):
                     try:
                         code, data = download_url(
                             url, opener=opener, headers=headers,
-                            debug=debug)
+                            debug=debug, timeout=self._timeout)
                         if code == 200:
                             wadl_queue.put((url, data))
                         # Pass on the redirect exception.
@@ -1452,18 +1583,19 @@ class Client(object):
                             wadl_queue.put((url, None))
                         else:
                             raise
-                    except urllib_request.URLError as e:
+                    except urllib_request.URLError:
                         wadl_queue.put((url, "timeout"))
-                    except socket_timeout as e:
+                    except socket_timeout:
                         wadl_queue.put((url, "timeout"))
-            return ThreadURL()
+            threadurl = ThreadURL()
+            threadurl._timeout = self.timeout
+            return threadurl
 
         threads = list(map(get_download_thread, urls))
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join(15)
-
         self.services = {}
 
         # Collect the redirection exceptions to be able to raise nicer
@@ -1486,7 +1618,8 @@ class Client(object):
                 redirect_messages.add(str(wadl))
                 continue
             elif decoded_wadl == "timeout":
-                raise FDSNException("Timeout while requesting '%s'." % url)
+                raise FDSNTimeoutException("Timeout while requesting '%s'."
+                                           % url)
 
             if "dataselect" in url:
                 wadl_parser = WADLParser(wadl)
@@ -1512,6 +1645,12 @@ class Client(object):
                 try:
                     self.services["available_event_catalogs"] = \
                         parse_simple_xml(wadl)["catalogs"]
+                    # XXX can be removed when IRIS/Earthscope drops its event
+                    # webservice
+                    if '.iris.' in url or 'earthscope' in url:
+                        self.services["available_event_catalogs"] = \
+                            _cleanup_earthscope(
+                                self.services["available_event_catalogs"])
                 except ValueError:
                     msg = "Could not parse the catalogs at '%s'." % url
                     warnings.warn(msg)
@@ -1519,6 +1658,12 @@ class Client(object):
                 try:
                     self.services["available_event_contributors"] = \
                         parse_simple_xml(wadl)["contributors"]
+                    # XXX can be removed when IRIS/Earthscope drops its event
+                    # webservice
+                    if '.iris.' in url or 'earthscope' in url:
+                        self.services["available_event_contributors"] = \
+                            _cleanup_earthscope(
+                                self.services["available_event_contributors"])
                 except ValueError:
                     msg = "Could not parse the contributors at '%s'." % url
                     warnings.warn(msg)
@@ -1529,8 +1674,7 @@ class Client(object):
             msg = ("No FDSN services could be discovered at '%s'. This could "
                    "be due to a temporary service outage or an invalid FDSN "
                    "service address." % self.base_url)
-            raise FDSNException(msg)
-
+            raise FDSNNoServiceException(msg)
         # Cache.
         if self.debug is True:
             print("Storing discovered services in cache.")
@@ -1602,7 +1746,7 @@ def convert_to_string(value):
     >>> print(convert_to_string(False))
     false
     """
-    if isinstance(value, (str, native_str)):
+    if isinstance(value, str):
         return value
     # Boolean test must come before integer check!
     elif isinstance(value, bool):
@@ -1613,14 +1757,12 @@ def convert_to_string(value):
         return str(value)
     elif isinstance(value, UTCDateTime):
         return str(value).replace("Z", "")
-    elif PY2 and isinstance(value, bytes):
-        return value
     else:
         raise TypeError("Unexpected type %s" % repr(value))
 
 
 def build_url(base_url, service, major_version, resource_type,
-              parameters=None, service_mappings=None):
+              parameters=None, service_mappings=None, subpath='fdsnws'):
     """
     URL builder for the FDSN webservices.
 
@@ -1666,8 +1808,13 @@ def build_url(base_url, service, major_version, resource_type,
     if service in service_mappings:
         url = "/".join((service_mappings[service], resource_type))
     else:
-        url = "/".join((base_url, "fdsnws", service,
-                        str(major_version), resource_type))
+        if subpath is None:
+            parts = (base_url, service, str(major_version),
+                     resource_type)
+        else:
+            parts = (base_url, subpath.lstrip('/'), service,
+                     str(major_version), resource_type)
+        url = "/".join(parts)
 
     if parameters:
         # Strip parameters.
@@ -1689,17 +1836,40 @@ def raise_on_error(code, data):
     :type data: :class:`io.BytesIO`
     :param data: Data returned by the server
     """
-    # get detailed server response message
+    # there can be random network issues that prevent us getting a proper HTTP
+    # response and they need to handled differently
+    if code is None:
+        if (isinstance(data, (socket_timeout, TimeoutError)) or
+                "timeout" in str(data).lower() or
+                "timed out" in str(data).lower()):
+            raise FDSNTimeoutException("Timed Out")
+        else:
+            raise FDSNException("Unknown Error (%s): %s" % (
+                (str(data.__class__.__name__), str(data))))
+
+    # get detailed server response message from a proper HTTP response to
+    # prepare raising a specific exception including the info response from the
+    # server
     if code != 200:
+        # let's try to resolve all the different types that `data` can sadly
+        # have..
+        # first, if it's `BytesIO` (or should it for whatever reason be
+        # `StringIO` which it shouldn't..) then break it down by reading it
         try:
             server_info = data.read()
-        except Exception:
-            server_info = None
-        else:
+        # if there is no `read()` method it should be `bytes`
+        except AttributeError:
+            server_info = data
+        # now decode the bytes (or if for whatever weird reason we ended up
+        # with a string, then do nothing more)
+        try:
             server_info = server_info.decode('ASCII', errors='ignore')
+        except AttributeError:
+            pass
         if server_info:
             server_info = "\n".join(
                 line for line in server_info.splitlines() if line)
+
     # No data.
     if code == 204:
         raise FDSNNoDataException("No data available for request.",
@@ -1707,32 +1877,40 @@ def raise_on_error(code, data):
     elif code == 400:
         msg = ("Bad request. If you think your request was valid "
                "please contact the developers.")
-        raise FDSNException(msg, server_info)
+        raise FDSNBadRequestException(msg, server_info)
     elif code == 401:
-        raise FDSNException("Unauthorized, authentication required.",
-                            server_info)
+        raise FDSNUnauthorizedException("Unauthorized, authentication "
+                                        "required.", server_info)
     elif code == 403:
-        raise FDSNException("Authentication failed.", server_info)
+        raise FDSNForbiddenException("Authentication failed.",
+                                     server_info)
     elif code == 413:
-        raise FDSNException("Request would result in too much data. "
-                            "Denied by the datacenter. Split the request "
-                            "in smaller parts", server_info)
+        raise FDSNRequestTooLargeException("Request would result in too much "
+                                           "data. Denied by the datacenter. "
+                                           "Split the request in smaller "
+                                           "parts", server_info)
     # Request URI too large.
     elif code == 414:
         msg = ("The request URI is too large. Please contact the ObsPy "
                "developers.", server_info)
         raise NotImplementedError(msg)
+    elif code == 429:
+        msg = ("Sent too many requests in a given amount of time ('rate "
+               "limiting'). Wait before making a new request.")
+        raise FDSNTooManyRequestsException(msg, server_info)
     elif code == 500:
-        raise FDSNException("Service responds: Internal server error",
-                            server_info)
+        raise FDSNInternalServerException("Service responds: Internal server "
+                                          "error", server_info)
+    elif code == 501:
+        raise FDSNNotImplementedException("Service responds: Not implemented ",
+                                          server_info)
+    elif code == 502:
+        raise FDSNBadGatewayException("Service responds: Bad gateway ",
+                                      server_info)
     elif code == 503:
-        raise FDSNException("Service temporarily unavailable", server_info)
-    elif code is None:
-        if "timeout" in str(data).lower():
-            raise FDSNException("Timed Out")
-        else:
-            raise FDSNException("Unknown Error (%s): %s" % (
-                (str(data.__class__.__name__), str(data))))
+        raise FDSNServiceUnavailableException("Service temporarily "
+                                              "unavailable",
+                                              server_info)
     # Catch any non 200 codes.
     elif code != 200:
         raise FDSNException("Unknown HTTP code: %i" % code, server_info)
@@ -1760,21 +1938,44 @@ def download_url(url, opener, timeout=10, headers={}, debug=False,
             print("-" * 70)
             print(data.decode())
             print("-" * 70)
-
     try:
         request = urllib_request.Request(url=url, headers=headers)
         # Request gzip encoding if desired.
         if use_gzip:
             request.add_header("Accept-encoding", "gzip")
-
         url_obj = opener.open(request, timeout=timeout, data=data)
     # Catch HTTP errors.
     except urllib_request.HTTPError as e:
+        # try hard to assemble the most details on what the problem is from the
+        # exception object
+        try:
+            error_msg = e.msg
+        except AttributeError:
+            error_msg = None
+        try:
+            error_details = e.read()
+        except Exception:
+            error_details = None
+        if error_details:
+            # looks like we get bytes back so let's decode but be robust just
+            # in case
+            try:
+                error_details = error_details.decode('UTF-8', errors='ignore')
+            except AttributeError:
+                pass
+        if error_msg and error_details:
+            error_data = f'{error_msg}\n{error_details}'
+        elif error_msg:
+            error_data = error_msg
+        elif error_details:
+            error_data = error_details
+        else:
+            error_data = None
         if debug is True:
             msg = "HTTP error %i, reason %s, while downloading '%s': %s" % \
-                  (e.code, str(e.reason), url, e.read())
+                  (e.code, str(e.reason), url, error_data or '')
             print(msg)
-        return e.code, e
+        return e.code, error_data
     except Exception as e:
         if debug is True:
             print("Error while downloading: %s" % url)
@@ -1788,7 +1989,13 @@ def download_url(url, opener, timeout=10, headers={}, debug=False,
             print("Uncompressing gzipped response for %s" % url)
         # Cannot directly stream to gzip from urllib!
         # http://www.enricozini.org/2011/cazzeggio/python-gzip/
-        buf = io.BytesIO(url_obj.read())
+        try:
+            reader = url_obj.read()
+        except IncompleteRead:
+            msg = 'Problem retrieving data from datacenter. '
+            msg += 'Try reducing size of request.'
+            raise HTTPException(msg)
+        buf = io.BytesIO(reader)
         buf.seek(0, 0)
         f = gzip.GzipFile(fileobj=buf)
     else:
@@ -1814,10 +2021,10 @@ def setup_query_dict(service, locs, kwargs):
             if locs[PARAMETER_ALIASES[key]] is not None:
                 msg = ("two parameters were provided for the same option: "
                        "%s, %s" % (key, PARAMETER_ALIASES[key]))
-                raise FDSNException(msg)
+                raise FDSNInvalidRequestException(msg)
     # short aliases are not mentioned in the downloaded WADLs, so we have
     # to map it here according to the official FDSN WS documentation
-    for key in kwargs.keys():
+    for key in list(kwargs.keys()):
         if key in PARAMETER_ALIASES:
             value = kwargs.pop(key)
             if value is not None:
@@ -1861,11 +2068,15 @@ def parse_simple_xml(xml_string):
 
 
 def get_bulk_string(bulk, arguments):
+    if not bulk:
+        msg = ("Empty 'bulk' parameter potentially leading to a FDSN request "
+               "of all available data")
+        raise FDSNInvalidRequestException(msg)
     # If its an iterable, we build up the query string from it
     # StringIO objects also have __iter__ so check for 'read' as well
-    if isinstance(bulk, collections.Iterable) \
+    if isinstance(bulk, collections.abc.Iterable) \
             and not hasattr(bulk, "read") \
-            and not isinstance(bulk, (str, native_str)):
+            and not isinstance(bulk, str):
         tmp = ["%s=%s" % (key, convert_to_string(value))
                for key, value in arguments.items() if value is not None]
         # empty location codes have to be represented by two dashes
@@ -1881,7 +2092,7 @@ def get_bulk_string(bulk, arguments):
         # if it has a read method, read data from there
         if hasattr(bulk, "read"):
             bulk = bulk.read()
-        elif isinstance(bulk, (str, native_str)):
+        elif isinstance(bulk, str):
             # check if bulk is a local file
             if "\n" not in bulk and os.path.isfile(bulk):
                 with open(bulk, 'r') as fh:
@@ -1908,7 +2119,25 @@ def _validate_eida_token(token):
     if re.search(pattern='BEGIN PGP MESSAGE', string=token,
                  flags=re.IGNORECASE):
         return True
+    elif re.search(pattern='BEGIN PGP SIGNED MESSAGE', string=token,
+                   flags=re.IGNORECASE):
+        return True
     return False
+
+
+def _cleanup_earthscope(items):
+    """
+    IRIS/Earthscope has all "catalogs" and "contributors" suffixed with "\n "
+    and has confirmed that this will not be fixed. So need to clean up here.
+
+    Can be removed when Earthscope drops its event service
+    """
+    new_items = []
+    for item in items:
+        if item.endswith('\n '):
+            item = item[:-2]
+        new_items.append(item)
+    return new_items
 
 
 if __name__ == '__main__':

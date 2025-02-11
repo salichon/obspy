@@ -1,21 +1,37 @@
 .. _coding-style-guide:
 
-ObsPy Coding Style Guide
-========================
+Coding Style Guide
+==================
 
 Like most Python projects, we try to adhere to :pep:`8` (Style Guide for Python
 Code) and :pep:`257` (Docstring Conventions) with the modifications documented
 here. Be sure to read all documents if you intend to contribute code to ObsPy.
 
 We rely on flake8_ for code style checks, it can be installed using ``conda
-install`` or ``pip install`` and can also be used to `set up git pre-commit
-hooks <http://flake8.pycqa.org/en/latest/user/using-hooks.html>`_.
+install`` or ``pip install``. Thanks to `.flake8` configuration file included 
+in the repository, check of your contributions with flake8_ can be done with 
+a single command ``flake8``.
+
+.. _flake8: https://flake8.pycqa.org
+
+Pre-Commit Hooks
+----------------
+
+In order to further ease the development process you can use pre-commit hooks.
+Pre-commit hooks can be configured in your repository with use of pre-commit_ 
+framework. In order to do that, execute two commands::
+
+    pip install pre-commit
+    pre-commit install
+
+That will install in your git repository all pre-commit hooks configured in 
+``.pre-commit-hooks.yaml`` file. 
 That way, ``flake8`` will immediately complain about problems with the coding
 style and the changes staged for committing can be adapted accordingly
 (even with git commit hooks installed, they can be ignored on a per-commit
 basis using ``git commit -n``).
 
-.. _flake8: http://flake8.pycqa.org
+.. _pre-commit: https://flake8.pycqa.org
 
 Import Conventions
 ------------------
@@ -30,6 +46,28 @@ manner:
 .. _NumPy: http://www.numpy.org/
 .. _SciPy: https://scipy.scipy.org/
 .. _matplotlib: http://matplotlib.org/
+
+Import statements in source code are grouped by standard library imports,
+followed by third party packages and finally obspy imports. Inside blocks
+``from ...`` imports come after ``import ...`` statements, and both should be
+sorted alphabetically:
+
+.. code-block:: python
+
+    import inspect
+    import math
+    import warnings
+    from copy import copy, deepcopy
+
+    import numpy as np
+    from decorator import decorator
+
+    from obspy import read, Stream
+    from obspy.core import compatibility
+    from obspy.core.utcdatetime import UTCDateTime
+    from obspy.core.util import AttribDict, create_empty_data_chunk, NUMPY_VERSION
+    from obspy.core.util.base import _get_function_from_entry_point
+    from obspy.core.util.decorator import raise_if_masked, skip_if_no_data
 
 Naming
 ------
@@ -147,7 +185,7 @@ explained by an example:
       :param tb: traceback object
       :param limit: maximum number of stack frames to show
       :type limit: integer or None
-      :rtype: list of strings
+      :rtype: list[str]
       :return: Traceback messages.
       """
 
@@ -161,8 +199,8 @@ which renders like this:
    :param value: exception value
    :param tb: traceback object
    :param limit: maximum number of stack frames to show
-   :type limit: integer or None
-   :rtype: list of strings
+   :type limit: int or None
+   :rtype: list[str]
    :return: Traceback messages.
 
 .. _reStructuredText: http://docutils.sourceforge.net/rst.html
@@ -211,17 +249,18 @@ made for each single publication (ideally with an URL or DOI), using first
 author and year as article identifier::
 
     @article{Beyreuther2010,
-    author = {Beyreuther, Moritz and Barsch, Robert and Krischer,
-              Lion and Megies, Tobias and Behr, Yannik and Wassermann, Joachim},
-    title = {ObsPy: A Python Toolbox for Seismology},
-    volume = {81},
-    number = {3},
-    pages = {530-533},
-    year = {May/June 2010},
-    doi = {10.1785/gssrl.81.3.530},
-    URL = {http://www.seismosoc.org/publications/SRL/SRL_81/srl_81-3_es/},
-    eprint = {http://srl.geoscienceworld.org/content/81/3/530.full.pdf+html},
-    journal = {Seismological Research Letters}
+      author = {Beyreuther, Moritz and Barsch, Robert and Krischer,
+                Lion and Megies, Tobias and Behr, Yannik and
+                Wassermann, Joachim},
+      title = {ObsPy: A Python Toolbox for Seismology},
+      volume = {81},
+      number = {3},
+      pages = {530-533},
+      year = {May/June 2010},
+      doi = {10.1785/gssrl.81.3.530},
+      URL = {http://www.seismosoc.org/publications/SRL/SRL_81/srl_81-3_es/},
+      eprint = {http://srl.geoscienceworld.org/content/81/3/530.full.pdf+html},
+      journal = {Seismological Research Letters}
     }
 
 This entry can then be referenced (using the bibtex article identifier) in

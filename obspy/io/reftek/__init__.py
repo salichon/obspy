@@ -21,9 +21,9 @@ should be filled in manually after reading). See the low-level routine
 be supplied to :func:`~obspy.core.stream.read`.
 Currently, only event header/trailer (EH/ET) and data packets (DT) are
 implemented and any other packets will be ignored (a warning is shown if any
-other packets are encountered during reading). So far, only data encoding "C0"
-(STEIM 1 compressed data) is implemented due to the lack of test data in other
-encodings.
+other packets are encountered during reading). So far, only data encodings
+"C0", "C2", "16" and "32" are implemented (due to the lack of test data in
+other encodings).
 
 Reading
 -------
@@ -56,14 +56,14 @@ Network, location and component codes can be specified during reading:
 <obspy.core.stream.Stream object at 0x...>
 >>> print(st)  # doctest: +ELLIPSIS
 8 Trace(s) in Stream:
-BW.KW1..EHZ | 2015-10-09T22:50:51.000000Z - ... | 200.0 Hz, 3165 samples
-BW.KW1..EHZ | 2015-10-09T22:51:06.215000Z - ... | 200.0 Hz, 892 samples
-BW.KW1..EHZ | 2015-10-09T22:51:11.675000Z - ... | 200.0 Hz, 2743 samples
+BW.KW1..EHE | 2015-10-09T22:50:51.000000Z - ... | 200.0 Hz, 3405 samples
+BW.KW1..EHE | 2015-10-09T22:51:08.415000Z - ... | 200.0 Hz, 3395 samples
 BW.KW1..EHN | 2015-10-09T22:50:51.000000Z - ... | 200.0 Hz, 3107 samples
 BW.KW1..EHN | 2015-10-09T22:51:05.925000Z - ... | 200.0 Hz, 768 samples
 BW.KW1..EHN | 2015-10-09T22:51:10.765000Z - ... | 200.0 Hz, 2925 samples
-BW.KW1..EHE | 2015-10-09T22:50:51.000000Z - ... | 200.0 Hz, 3405 samples
-BW.KW1..EHE | 2015-10-09T22:51:08.415000Z - ... | 200.0 Hz, 3395 samples
+BW.KW1..EHZ | 2015-10-09T22:50:51.000000Z - ... | 200.0 Hz, 3165 samples
+BW.KW1..EHZ | 2015-10-09T22:51:06.215000Z - ... | 200.0 Hz, 892 samples
+BW.KW1..EHZ | 2015-10-09T22:51:11.675000Z - ... | 200.0 Hz, 2743 samples
 
 Reftek 130 specific metadata (from event header packet) is stored
 in ``stats.reftek130``.
@@ -72,12 +72,12 @@ in ``stats.reftek130``.
          network: BW
          station: KW1
         location:
-         channel: EHZ
+         channel: EHE
        starttime: 2015-10-09T22:50:51.000000Z
-         endtime: 2015-10-09T22:51:06.820000Z
+         endtime: 2015-10-09T22:51:08.020000Z
    sampling_rate: 200.0
            delta: 0.005
-            npts: 3165
+            npts: 3405
            calib: 1.0
          _format: REFTEK130
        reftek130: ...
@@ -94,7 +94,7 @@ Packet Sequence  Byte Count  Data Fmt  Sampling Rate      Time
   | Packet Type   |  Event #  | Station | Channel #         |
   |   |  Unit ID  |    | Data Stream #  |   |  # of samples |
   |   |   |  Exper.#   |   |  |  |      |   |    |          |
-0000 EH AE4C  0  416  427  0 C0 KW1    200         2015-10-09T22:50:51.000000Z
+0000 EH AE4C  0  416  427  0 C0 KW1    200.        2015-10-09T22:50:51.000000Z
 0001 DT AE4C  0 1024  427  0 C0             0  549 2015-10-09T22:50:51.000000Z
 0002 DT AE4C  0 1024  427  0 C0             1  447 2015-10-09T22:50:51.000000Z
 0003 DT AE4C  0 1024  427  0 C0             2  805 2015-10-09T22:50:51.000000Z
@@ -122,7 +122,7 @@ Packet Sequence  Byte Count  Data Fmt  Sampling Rate      Time
 0025 DT AE4C  0 1024  427  0 C0             1  673 2015-10-09T22:51:22.025000Z
 0026 DT AE4C  0 1024  427  0 C0             2  759 2015-10-09T22:51:21.595000Z
 0027 DT AE4C  0 1024  427  0 C0             0   67 2015-10-09T22:51:25.055000Z
-0028 ET AE4C  0  416  427  0 C0 KW1    200         2015-10-09T22:50:51.000000Z
+0028 ET AE4C  0  416  427  0 C0 KW1    200.        2015-10-09T22:50:51.000000Z
 (detailed packet information with: 'print(Reftek130.__str__(compact=False))')
 >>> print(rt.__str__(compact=False)) # doctest: +NORMALIZE_WHITESPACE +ELLIPSIS
 Reftek130 (29 packets, file: ...225051000_00008656)
@@ -146,7 +146,7 @@ EH Packet
     last_sample_time: None
     position:
     ...
-    sampling_rate: 200
+    sampling_rate: 200.0
     station_channel_number: (None, None, None, None, None, None, None, ...)
     station_comment: STATION COMMENT
     station_name: KW1
@@ -192,11 +192,6 @@ DT Packet
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
-
 if __name__ == '__main__':
     import doctest
     doctest.testmod(exclude_empty=True)

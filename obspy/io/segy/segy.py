@@ -10,10 +10,6 @@
 """
 Routines to read and write SEG Y rev 1 encoded seismic data files.
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 import io
 import os
 from struct import pack, unpack
@@ -30,7 +26,7 @@ from .header import (BINARY_FILE_HEADER_FORMAT,
                      DATA_SAMPLE_FORMAT_UNPACK_FUNCTIONS, ENDIAN,
                      TRACE_HEADER_FORMAT, TRACE_HEADER_KEYS)
 from .unpack import OnTheFlyDataUnpacker
-from .util import unpack_header_value
+from .util import unpack_header_value, _pack_attribute_nicer_exception
 
 
 class SEGYError(Exception):
@@ -110,8 +106,7 @@ class SEGYFile(object):
         :type headonly: bool
         :param headonly: Determines whether or not the actual data records
             will be read and unpacked. Has a huge impact on memory usage. Data
-            can be read and unpacked on-the-fly after reading the file.
-            Defaults to False.
+            will not be unpackable on-the-fly. Defaults to False.
         :type read_traces: bool
         :param read_traces: Data traces will only be read if this is set to
             ``True``. The data will be completely ignored if this is set to
@@ -333,12 +328,12 @@ class SEGYFile(object):
         # warning but don't do anything.
 
         # Make sure the textual header has the required fields.
-        revision_number = textual_header[3200-160:3200-146].decode()
-        end_header_mark = textual_header[3200-80:3200-58]
+        revision_number = textual_header[3200 - 160:3200 - 146].decode()
+        end_header_mark = textual_header[3200 - 80:3200 - 58]
         if revision_number != "C39 SEG Y REV1":
             if revision_number.strip() in ("", "C", "C39"):
-                textual_header = textual_header[:3200-160] + \
-                    b"C39 SEG Y REV1" + textual_header[3200-146:]
+                textual_header = textual_header[:3200 - 160] + \
+                    b"C39 SEG Y REV1" + textual_header[3200 - 146:]
             else:
                 # Raise warning but don't do anything.
                 msg = ("The revision number in the textual header should be "
@@ -353,8 +348,8 @@ class SEGYFile(object):
 
         if end_header_mark != desired_end_header_mark:
             if end_header_mark.strip() in (b"", b"C", b"C40"):
-                textual_header = textual_header[:3200-80] + \
-                    desired_end_header_mark + textual_header[3200-58:]
+                textual_header = textual_header[:3200 - 80] + \
+                    desired_end_header_mark + textual_header[3200 - 58:]
             else:
                 # Raise warning but don't do anything.
                 msg = ("The end header mark in the textual header should be "
@@ -395,7 +390,7 @@ class SEGYFile(object):
         :type headonly: bool
         :param headonly: Determines whether or not the actual data records
             will be read and unpacked. Has a huge impact on memory usage. Data
-            can be read and unpacked on-the-fly after reading the file.
+            will not be unpackable on-the-fly after reading the file.
             Defaults to False.
 
         :type yield_each_trace: bool
@@ -499,13 +494,13 @@ class SEGYBinaryFileHeader(object):
             if length == 2:
                 format = ('%sh' % endian).encode('ascii', 'strict')
                 # Write to file.
-                file.write(pack(format, getattr(self, name)))
+                file.write(_pack_attribute_nicer_exception(self, name, format))
             # Update: Seems to be correct. Two's complement integers seem to be
             # the common way to store integer values.
             elif length == 4:
                 format = ('%si' % endian).encode('ascii', 'strict')
                 # Write to file.
-                file.write(pack(format, getattr(self, name)))
+                file.write(_pack_attribute_nicer_exception(self, name, format))
             # These are the two unassigned values in the binary file header.
             elif name.startswith('unassigned'):
                 temp = getattr(self, name)
@@ -571,7 +566,7 @@ class SEGYTrace(object):
         :param headonly: bool
         :param headonly: Determines whether or not the actual data records
             will be read and unpacked. Has a huge impact on memory usage. Data
-            can be read and unpacked on-the-fly after reading the file.
+            will not be unpackable on-the-fly after reading the file.
             Defaults to False.
         """
         self.endian = endian
@@ -608,7 +603,7 @@ class SEGYTrace(object):
         :type headonly: bool
         :param headonly: Determines whether or not the actual data records
             will be read and unpacked. Has a huge impact on memory usage. Data
-            can be read and unpacked on-the-fly after reading the file.
+            will not be unpackable on-the-fly after reading the file.
             Defaults to False.
         """
         trace_header = self.file.read(240)
@@ -940,8 +935,8 @@ def _read_segy(file, endian=None, textual_header_encoding=None,
         Defaults to False.
     :type headonly: bool
     :param headonly: Determines whether or not the actual data records will be
-        read and unpacked. Has a huge impact on memory usage. Data can be read
-        and unpacked on-the-fly after reading the file. Defaults to False.
+        read and unpacked. Has a huge impact on memory usage. Data will not be
+        unpackable on-the-fly after reading the file. Defaults to False.
     """
     # Open the file if it is not a file like object.
     if not hasattr(file, 'read') or not hasattr(file, 'tell') or not \
@@ -979,8 +974,8 @@ def _internal_read_segy(file, endian=None, textual_header_encoding=None,
         Defaults to False.
     :type headonly: bool
     :param headonly: Determines whether or not the actual data records will be
-        read and unpacked. Has a huge impact on memory usage. Data can be read
-        and unpacked on-the-fly after reading the file. Defaults to False.
+        read and unpacked. Has a huge impact on memory usage. Data will not be
+        unpackable on-the-fly after reading the file. Defaults to False.
     """
     return SEGYFile(file, endian=endian,
                     textual_header_encoding=textual_header_encoding,
@@ -1029,8 +1024,8 @@ def iread_segy(file, endian=None, textual_header_encoding=None,
         Defaults to False.
     :type headonly: bool
     :param headonly: Determines whether or not the actual data records will be
-        read and unpacked. Has a huge impact on memory usage. Data can be read
-        and unpacked on-the-fly after reading the file. Defaults to False.
+        read and unpacked. Has a huge impact on memory usage. Data will not be
+        unpackable on-the-fly after reading the file. Defaults to False.
     """
     # Open the file if it is not a file like object.
     if not hasattr(file, 'read') or not hasattr(file, 'tell') or not \
@@ -1109,8 +1104,8 @@ def iread_su(file, endian=None, unpack_headers=False, headonly=False):
         Defaults to False.
     :type headonly: bool
     :param headonly: Determines whether or not the actual data records will be
-        read and unpacked. Has a huge impact on memory usage. Data can be read
-        and unpacked on-the-fly after reading the file. Defaults to False.
+        read and unpacked. Has a huge impact on memory usage. Data will not be
+        unpackable on-the-fly after reading the file. Defaults to False.
     """
     # Open the file if it is not a file like object.
     if not hasattr(file, 'read') or not hasattr(file, 'tell') or not \
@@ -1172,7 +1167,7 @@ class SUFile(object):
         :type headonly: bool
         :param headonly: Determines whether or not the actual data records
             will be read and unpacked. Has a huge impact on memory usage. Data
-            can be read and unpacked on-the-fly after reading the file.
+            will not be unpackable on-the-fly after reading the file.
             Defaults to False.
         :type read_traces: bool
         :param read_traces: Data traces will only be read if this is set to
@@ -1238,6 +1233,7 @@ class SUFile(object):
         :type headonly: bool
         :param headonly: Determines whether or not the actual data records
             will be unpacked. Useful if one is just interested in the headers.
+            Data will not be unpackable on-the-fly after reading the file.
             Defaults to False.
         :type yield_each_trace: bool
         :param yield_each_trace: If True, it will yield each trace after it

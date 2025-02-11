@@ -9,22 +9,19 @@ Provides the Network class.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-from future.utils import python_2_unicode_compatible
-
 import copy
 import fnmatch
 import warnings
 
 from obspy.core.util.obspy_types import ObsPyException, ZeroSamplingRate
+from obspy.geodetics import inside_geobounds
 
 from .station import Station
-from .util import BaseNode, _unified_content_strings, _textwrap
+from .util import (
+    BaseNode, Operator, _unified_content_strings, _textwrap,
+    _response_plot_label)
 
 
-@python_2_unicode_compatible
 class Network(BaseNode):
     """
     From the StationXML definition:
@@ -37,10 +34,13 @@ class Network(BaseNode):
                  selected_number_of_stations=None, description=None,
                  comments=None, start_date=None, end_date=None,
                  restricted_status=None, alternate_code=None,
-                 historical_code=None, data_availability=None):
+                 historical_code=None, data_availability=None,
+                 identifiers=None, operators=None, source_id=None):
         """
         :type code: str
         :param code: The SEED network code.
+        :type stations: list of :class:`~obspy.core.inventory.station.Station`
+        :param stations: List of stations for the network.
         :type total_number_of_stations: int
         :param total_number_of_stations: The total number of stations
             contained in this network, including inactive or terminated
@@ -67,20 +67,35 @@ class Network(BaseNode):
         :type historical_code: str, optional
         :param historical_code: A previously used code if different from the
             current code.
-        :type data_availability: :class:`~obspy.station.util.DataAvailability`
+        :type data_availability:
+            :class:`~obspy.core.inventory.util.DataAvailability`
         :param data_availability: Information about time series availability
             for the network.
+        :type identifiers: list[str], optional
+        :param identifiers: Persistent identifiers for network/station/channel
+            (schema version >=1.1). URIs are in general composed of a 'scheme'
+            and a 'path' (optionally with additional components), the two of
+            which separated by a colon.
+        :type operators: list of :class:`~obspy.core.inventory.util.Operator`
+        :param operators: An operating agency and associated contact persons.
+        :type source_id: str, optional
+        :param source_id: A data source identifier in URI form
+            (schema version >=1.1). URIs are in general composed of a 'scheme'
+            and a 'path' (optionally with additional components), the two of
+            which separated by a colon.
         """
         self.stations = stations or []
         self.total_number_of_stations = total_number_of_stations
         self.selected_number_of_stations = selected_number_of_stations
+        self.operators = operators or []
 
         super(Network, self).__init__(
             code=code, description=description, comments=comments,
             start_date=start_date, end_date=end_date,
             restricted_status=restricted_status, alternate_code=alternate_code,
             historical_code=historical_code,
-            data_availability=data_availability)
+            data_availability=data_availability,
+            identifiers=identifiers, source_id=source_id)
 
     @property
     def total_number_of_stations(self):
@@ -103,6 +118,23 @@ class Network(BaseNode):
             msg = "selected_number_of_stations cannot be negative."
             raise ValueError(msg)
         self._selected_number_of_stations = value
+
+    @property
+    def operators(self):
+        return self._operators
+
+    @operators.setter
+    def operators(self, value):
+        if not hasattr(value, "__iter__"):
+            msg = "Operators needs to be an iterable, e.g. a list."
+            raise ValueError(msg)
+        # make sure to unwind actual iterators, or the just might get exhausted
+        # at some point
+        operators = [operator for operator in value]
+        if any([not isinstance(x, Operator) for x in operators]):
+            msg = "Operators can only contain Operator objects."
+            raise ValueError(msg)
+        self._operators = operators
 
     def __len__(self):
         return len(self.stations)
@@ -330,8 +362,10 @@ class Network(BaseNode):
 
     def select(self, station=None, location=None, channel=None, time=None,
                starttime=None, endtime=None, sampling_rate=None,
-               keep_empty=False):
-        """
+               keep_empty=False, minlatitude=None, maxlatitude=None,
+               minlongitude=None, maxlongitude=None, latitude=None,
+               longitude=None, minradius=None, maxradius=None):
+        r"""
         Returns the :class:`Network` object with only the
         :class:`~obspy.core.inventory.station.Station`\ s /
         :class:`~obspy.core.inventory.channel.Channel`\ s that match the given
@@ -341,7 +375,7 @@ class Network(BaseNode):
             The returned object is based on a shallow copy of the original
             object. That means that modifying any mutable child elements will
             also modify the original object
-            (see https://docs.python.org/2/library/copy.html).
+            (see https://docs.python.org/3/library/copy.html).
             Use :meth:`copy()` afterwards to make a new copy of the data in
             memory.
 
@@ -388,6 +422,35 @@ class Network(BaseNode):
             given point in time (i.e. channels starting after given time will
             not be shown).
         :type sampling_rate: float
+        :param sampling_rate: Only include channels whose sampling rate
+            matches the given sampling rate, in Hz (within absolute tolerance
+            of 1E-8 Hz and relative tolerance of 1E-5)
+        :type minlatitude: float
+        :param minlatitude: Only include stations/channels with a latitude
+            larger than the specified minimum.
+        :type maxlatitude: float
+        :param maxlatitude: Only include stations/channels with a latitude
+            smaller than the specified maximum.
+        :type minlongitude: float
+        :param minlongitude: Only include stations/channels with a longitude
+            larger than the specified minimum.
+        :type maxlongitude: float
+        :param maxlongitude: Only include stations/channels with a longitude
+            smaller than the specified maximum.
+        :type latitude: float
+        :param latitude: Specify the latitude to be used for a radius
+            selection.
+        :type longitude: float
+        :param longitude: Specify the longitude to be used for a radius
+            selection.
+        :type minradius: float
+        :param minradius: Only include stations/channels within the specified
+            minimum number of degrees from the geographic point defined by the
+            latitude and longitude parameters.
+        :type maxradius: float
+        :param maxradius: Only include stations/channels within the specified
+            maximum number of degrees from the geographic point defined by the
+            latitude and longitude parameters.
         :type keep_empty: bool
         :param keep_empty: If set to `True`, stations that match
             themselves but have no matching child elements (channels)
@@ -406,13 +469,25 @@ class Network(BaseNode):
                 if not sta.is_active(time=time, starttime=starttime,
                                      endtime=endtime):
                     continue
+            geo_filters = dict(
+                minlatitude=minlatitude, maxlatitude=maxlatitude,
+                minlongitude=minlongitude, maxlongitude=maxlongitude,
+                latitude=latitude, longitude=longitude, minradius=minradius,
+                maxradius=maxradius)
+            if any(value is not None for value in geo_filters.values()):
+                if not inside_geobounds(sta, **geo_filters):
+                    continue
 
             has_channels = bool(sta.channels)
 
             sta_ = sta.select(
                 location=location, channel=channel, time=time,
                 starttime=starttime, endtime=endtime,
-                sampling_rate=sampling_rate)
+                sampling_rate=sampling_rate,
+                minlatitude=minlatitude, maxlatitude=maxlatitude,
+                minlongitude=minlongitude, maxlongitude=maxlongitude,
+                latitude=latitude, longitude=longitude,
+                minradius=minradius, maxradius=maxradius)
 
             # If the station previously had channels but no longer has any
             # and keep_empty is False: Skip the station.
@@ -439,8 +514,8 @@ class Network(BaseNode):
 
             Defaults to "global"
         :type resolution: str, optional
-        :param resolution: Resolution of the boundary database to use. Will be
-            based directly to the basemap module. Possible values are:
+        :param resolution: Resolution of the boundary database to use.
+            Possible values are:
 
             * ``"c"`` (crude)
             * ``"l"`` (low)
@@ -449,10 +524,10 @@ class Network(BaseNode):
             * ``"f"`` (full)
 
             Defaults to ``"l"``
-        :type continent_fill_color: Valid matplotlib color, optional
+        :type continent_fill_color: valid matplotlib color, optional
         :param continent_fill_color:  Color of the continents. Defaults to
             ``"0.9"`` which is a light gray.
-        :type water_fill_color: Valid matplotlib color, optional
+        :type water_fill_color: valid matplotlib color, optional
         :param water_fill_color: Color of all water bodies.
             Defaults to ``"white"``.
         :type marker: str
@@ -478,16 +553,15 @@ class Network(BaseNode):
         :type method: str
         :param method: Method to use for plotting. Possible values are:
 
-            * ``'basemap'`` to use the Basemap library
             * ``'cartopy'`` to use the Cartopy library
             * ``None`` to use the best available library
 
             Defaults to ``None``.
         :type fig: :class:`matplotlib.figure.Figure`
         :param fig: Figure instance to reuse, returned from a previous
-            inventory/catalog plot call with `method=basemap`.
-            If a previous basemap plot is reused, any kwargs regarding the
-            basemap plot setup will be ignored (i.e.  `projection`,
+            inventory/catalog plot call with `method=cartopy`.
+            If a previous cartopy plot is reused, any kwargs regarding the
+            cartopy plot setup will be ignored (i.e.  `projection`,
             `resolution`, `continent_fill_color`, `water_fill_color`). Note
             that multiple plots using colorbars likely are problematic, but
             e.g. one station plot (without colorbar) and one event plot (with
@@ -566,7 +640,8 @@ class Network(BaseNode):
 
     def plot_response(self, min_freq, output="VEL", station="*", location="*",
                       channel="*", time=None, starttime=None, endtime=None,
-                      axes=None, unwrap_phase=False, show=True, outfile=None):
+                      axes=None, unwrap_phase=False, show=True, outfile=None,
+                      label_epoch_dates=False):
         """
         Show bode plot of instrument response of all (or a subset of) the
         network's channels.
@@ -619,6 +694,9 @@ class Network(BaseNode):
             also used to automatically determine the output format. Supported
             file formats depend on your matplotlib backend.  Most backends
             support png, pdf, ps, eps and svg. Defaults to ``None``.
+        :type label_epoch_dates: bool
+        :param label_epoch_dates: Whether to add channel epoch dates in the
+            plot's legend labels.
 
         .. rubric:: Basic Usage
 
@@ -634,7 +712,7 @@ class Network(BaseNode):
         """
         import matplotlib.pyplot as plt
 
-        if axes:
+        if axes is not None:
             ax1, ax2 = axes
             fig = ax1.figure
         else:
@@ -648,12 +726,12 @@ class Network(BaseNode):
 
         for sta in matching.stations:
             for cha in sta.channels:
+                label = _response_plot_label(
+                    self, sta, cha, label_epoch_dates=label_epoch_dates)
                 try:
                     cha.plot(min_freq=min_freq, output=output, axes=(ax1, ax2),
-                             label=".".join((self.code, sta.code,
-                                             cha.location_code, cha.code)),
-                             unwrap_phase=unwrap_phase, show=False,
-                             outfile=None)
+                             label=label, unwrap_phase=unwrap_phase,
+                             show=False, outfile=None)
                 except ZeroSamplingRate:
                     msg = ("Skipping plot of channel with zero "
                            "sampling rate:\n%s")

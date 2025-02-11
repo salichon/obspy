@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 NDK file support for ObsPy
@@ -11,21 +10,12 @@ The format is an ASCII format but will internally handled by unicode routines.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA @UnusedWildImport
-
 import math
 import re
-import sys
 import traceback
 import uuid
 import warnings
-
-if sys.version_info.major == 2:
-    from itertools import izip_longest as zip_longest
-else:
-    from itertools import zip_longest
+from itertools import zip_longest
 
 from obspy import UTCDateTime
 from obspy.core.event import (Axis, Catalog, Comment, CreationInfo, DataUsed,
@@ -515,11 +505,15 @@ def _read_lines(line1, line2, line3, line4, line5):
     #         events, the date and time of the analysis. This is useful to
     #         distinguish Quick CMTs ("Q-"), calculated within hours of an
     #         event, from Standard CMTs ("S-"), which are calculated later.
+    if line3[0:9] != "CENTROID:":
+        raise ObsPyNDKException("parse error")
+    numbers = [line3[10:18], line3[18:22], line3[22:29], line3[29:34],
+               line3[34:42], line3[42:47], line3[47:53], line3[53:58]]
     rec["centroid_time"], rec["centroid_time_error"], \
         rec["centroid_latitude"], rec["centroid_latitude_error"], \
         rec["centroid_longitude"], rec["centroid_longitude_error"], \
         rec["centroid_depth_in_km"], rec["centroid_depth_in_km_error"] = \
-        map(float, line3[:58].split()[1:])
+        map(float, numbers)
     type_of_depth = line3[59:63].strip().upper()
 
     if type_of_depth == "FREE":
@@ -609,8 +603,3 @@ def _read_lines(line1, line2, line3, line4, line5):
     }
 
     return rec
-
-
-if __name__ == '__main__':
-    import doctest
-    doctest.testmod(exclude_empty=True)

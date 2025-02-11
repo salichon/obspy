@@ -11,10 +11,6 @@ JSeedLink of Anthony Lomax
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 import io
 import logging
 import select
@@ -30,11 +26,6 @@ from ..slpacket import SLPacket
 
 # default logger
 logger = logging.getLogger('obspy.clients.seedlink')
-
-# set to True for debugging to stdout
-if False:
-    import sys
-    logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 
 
 class SeedLinkConnection(object):
@@ -114,6 +105,7 @@ class SeedLinkConnection(object):
     """
 
     SEEDLINK_PROTOCOL_PREFIX = "seedlink://"
+    SEEDLINK_DEFAULT_PORT = 18000
     UNISTATION = b"UNISTATION"
     UNINETWORK = b"UNINETWORK"
     DFT_READBUF_SIZE = 1024
@@ -220,7 +212,10 @@ class SeedLinkConnection(object):
         """
         prefix = SeedLinkConnection.SEEDLINK_PROTOCOL_PREFIX
         if sladdr.startswith(prefix):
-            self.sladdr = len(sladdr[prefix:])
+            sladdr = len(sladdr[prefix:])
+        # use default port 18000
+        if ':' not in sladdr:
+            sladdr += ':%d' % self.SEEDLINK_DEFAULT_PORT
         self.sladdr = sladdr
         # set logger format
         name = " obspy.clients.seedlink [%s]" % (sladdr)
@@ -397,7 +392,7 @@ class SeedLinkConnection(object):
         finally:
             try:
                 streamfile_file.close()
-            except Exception as e:
+            except Exception:
                 pass
         return stacount
 
@@ -652,7 +647,7 @@ class SeedLinkConnection(object):
         finally:
             try:
                 statefile_file.close()
-            except Exception as e:
+            except Exception:
                 pass
         return stacount
 
@@ -696,7 +691,7 @@ class SeedLinkConnection(object):
         finally:
             try:
                 statefile_file.close()
-            except Exception as e:
+            except Exception:
                 pass
         return stacount
 
@@ -704,7 +699,7 @@ class SeedLinkConnection(object):
         """
         Terminate the collection loop.
         """
-        logger.warn("terminating collect loop")
+        logger.warning("terminating collect loop")
         self.disconnect()
         self.state = SLState()
         self.info_request_string = None
@@ -788,7 +783,7 @@ class SeedLinkConnection(object):
                     self.state.query_mode = SLState.KEEP_ALIVE_QUERY
                     self.state.expect_info = True
                     self.state.keepalive_trig = -1
-                except IOError as ioe:
+                except IOError:
                     msg = "I/O error, reconnecting in %ss"
                     logger.warn(msg % (self.netdly))
                     self.disconnect()
@@ -802,7 +797,7 @@ class SeedLinkConnection(object):
                     self.send_info_request(self.info_request_string, 1)
                     self.state.query_mode = SLState.INFO_QUERY
                     self.state.expect_info = True
-                except IOError as ioe:
+                except IOError:
                     self.state.query_mode = SLState.NO_QUERY
                     msg = "I/O error, reconnecting in %ss"
                     logger.warn(msg % (self.netdly))
@@ -833,7 +828,7 @@ class SeedLinkConnection(object):
                         self.send_info_request(self.info_request_string, 1)
                         self.state.query_mode = SLState.INFO_QUERY
                         self.state.expect_info = True
-                    except IOError as ioe:
+                    except IOError:
                         msg = "SeedLink version does not support INFO requests"
                         logger.info(msg)
                         self.state.query_mode = SLState.NO_QUERY
@@ -948,14 +943,14 @@ class SeedLinkConnection(object):
                             "SeedLink reported an error with the last command")
                         self.disconnect()
                         return SLPacket.SLERROR
-                except SeedLinkException as sle:
+                except SeedLinkException:
                     pass  # not enough bytes to determine packet type
                 try:
                     if self.state.is_end():
                         logger.info("end of buffer or selected time window")
                         self.disconnect()
                         return SLPacket.SLTERMINATE
-                except SeedLinkException as sle:
+                except SeedLinkException:
                     pass
 
                 # Check for more available data from the socket
@@ -1031,7 +1026,7 @@ class SeedLinkConnection(object):
 
         :raise SeedLinkException: on error or no response or bad response from
             server.
-        :raise IOException: if an I/O error occurs.
+        :raise IOError: if an I/O error occurs.
         """
         timeout = 4.0
 
@@ -1154,7 +1149,7 @@ class SeedLinkConnection(object):
         :return: the response bytes or null if no response requested.
 
         :raise SeedLinkException: on error or no or bad response from server.
-        :raise IOException: if an I/O error occurs.
+        :raise IOError: if an I/O error occurs.
 
         """
         # print("DEBUG: sendbytes:", repr(sendbytes))
@@ -1194,7 +1189,7 @@ class SeedLinkConnection(object):
         :return: the response bytes (zero length if no available data), or null
             if EOF.
 
-        :raise IOException: if an I/O error occurs.
+        :raise IOError: if an I/O error occurs.
         """
         # read up to maxbytes
         try:
@@ -1226,7 +1221,7 @@ class SeedLinkConnection(object):
         if it can not be parsed from the returned string.
 
         :raise SeedLinkException: on error.
-        :raise IOException: if an I/O error occurs.
+        :raise IOError: if an I/O error occurs.
         """
         send_str = b"HELLO"
         logger.debug("sending: %s" % (send_str.decode()))
@@ -1286,7 +1281,7 @@ class SeedLinkConnection(object):
             CONNECTIONS, ALL).
 
         :raise SeedLinkException: on error.
-        :raise IOException: if an I/O error occurs.
+        :raise IOError: if an I/O error occurs.
         """
         if self.check_version(2.92) >= 0:
             bytes_ = b"INFO " + info_level.encode('ascii', 'strict') + b"\r"
@@ -1349,7 +1344,7 @@ class SeedLinkConnection(object):
         :param curstream: the description of the station to negotiate.
 
         :raise SeedLinkException: on error.
-        :raise IOException: if an I/O error occurs.
+        :raise IOError: if an I/O error occurs.
 
         """
 
@@ -1472,7 +1467,7 @@ class SeedLinkConnection(object):
         requested starting at seqnum.
 
         :raise SeedLinkException: on error.
-        :raise IOException: if an I/O error occurs.
+        :raise IOError: if an I/O error occurs.
         """
         # get stream (should be only stream present)
         curstream = None
@@ -1500,7 +1495,7 @@ class SeedLinkConnection(object):
         requested starting at seqnum.
 
         :raise SeedLinkException: on error.
-        :raise IOException: if an I/O error occurs.
+        :raise IOError: if an I/O error occurs.
         """
         acceptsta = 0
         if len(self.streams) < 1:

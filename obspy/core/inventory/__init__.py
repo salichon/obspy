@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-obspy.core.inventory - Classes for handling station metadata
-============================================================
+Module for handling station metadata
+
 This module provides a class hierarchy to consistently handle station metadata.
 This class hierarchy is closely modelled after the upcoming de-facto standard
 format `FDSN StationXML <https://www.fdsn.org/xml/station/>`_ which was
 developed as a human readable XML replacement for Dataless SEED.
 
-.. note:: IRIS is maintaining a Java tool for converting dataless SEED into
-          StationXML and vice versa at
+.. note:: EarthScope/IRIS is maintaining a Java tool for converting dataless
+          SEED into StationXML and vice versa at
           https://seiscode.iris.washington.edu/projects/stationxml-converter
 
 :copyright:
@@ -38,7 +38,7 @@ Inventory created at 2013-12-07T18:00:42.878000Z
         Stations (1):
             BW.RJOB (Jochberg, Bavaria, BW-Net)
         Channels (3):
-            BW.RJOB..EHE, BW.RJOB..EHN, BW.RJOB..EHZ
+            BW.RJOB..EHZ, BW.RJOB..EHN, BW.RJOB..EHE
 
 The file format in principle is autodetected. However, the autodetection uses
 the official StationXML XSD schema and unfortunately many real world files
@@ -65,8 +65,8 @@ attached to the channels as an attribute.
 >>> print(net)  # doctest: +NORMALIZE_WHITESPACE
 Network BW (BayernNetz)
     Station Count: None/None (Selected/Total)
-    None -
-    Access: None
+    -- - --
+    Access: UNKNOWN
     Contains:
         Stations (1):
             BW.RJOB (Jochberg, Bavaria, BW-Net)
@@ -81,23 +81,23 @@ Station RJOB (Jochberg, Bavaria, BW-Net)
     Channel Count: None/None (Selected/Total)
     2007-12-17T00:00:00.000000Z -
     Access: None
-    Latitude: 47.74, Longitude: 12.80, Elevation: 860.0 m
+    Latitude: 47.7372, Longitude: 12.7957, Elevation: 860.0 m
     Available Channels:
-        RJOB..EHZ, RJOB..EHN, RJOB..EHE
+        ..EH[ZNE]   200.0 Hz  2007-12-17(351) -
 
 >>> cha = sta[0]
 >>> print(cha)  # doctest: +NORMALIZE_WHITESPACE
 Channel 'EHZ', Location ''
-   Timerange: 2007-12-17T00:00:00.000000Z - --
-   Latitude: 47.74, Longitude: 12.80, Elevation: 860.0 m, Local Depth: 0.0 m
-   Azimuth: 0.00 degrees from north, clockwise
-   Dip: -90.00 degrees down from horizontal
-   Channel types: TRIGGERED, GEOPHYSICAL
-   Sampling Rate: 200.00 Hz
-   Sensor: Streckeisen STS-2/N seismometer
-   Response information available
+    Time range: 2007-12-17T00:00:00.000000Z - --
+    Latitude: 47.7372, Longitude: 12.7957, Elevation: 860.0 m, Local Depth: 0.0 m
+    Azimuth: 0.00 degrees from north, clockwise
+    Dip: -90.00 degrees down from horizontal
+    Channel types: TRIGGERED, GEOPHYSICAL
+    Sampling Rate: 200.00 Hz
+    Sensor (Description): Streckeisen STS-2/N seismometer (None)
+    Response information available
 
->>> print(cha.response)  # doctest: +NORMALIZE_WHITESPACE + ELLIPSIS
+>>> print(cha.response)  # doctest: +NORMALIZE_WHITESPACE +ELLIPSIS
 Channel Response
    From M/S (Velocity in Meters Per Second) to COUNTS (Digital Counts)
    Overall Sensitivity: 2.5168e+09 defined at 0.020 Hz
@@ -156,6 +156,23 @@ For example:
     resp = inv[0][0][0].response
     resp.plot(0.001, output="VEL")
 
+When plotting stations with instrumentation changes, epoch times can be added
+to the legend labels:
+
+.. code-block:: python
+
+    >>> from obspy import read_inventory
+    >>> inv = read_inventory()
+    >>> inv = inv.select(station='RJOB', channel='EHZ')
+    >>> inv.plot_response(0.001, label_epoch_dates=True)  # doctest: +SKIP
+
+.. plot::
+
+    from obspy import read_inventory
+    inv = read_inventory()
+    inv = inv.select(station='RJOB', channel='EHZ')
+    inv.plot_response(0.001, label_epoch_dates=True)
+
 For more examples see the :ref:`Obspy Gallery <gallery>`.
 
 Dealing with the Response information
@@ -174,8 +191,6 @@ method will call some functions within evalresp to generate the response.
 Some convenience methods to perform an instrument correction on
 :class:`~obspy.core.stream.Stream` (and :class:`~obspy.core.trace.Trace`)
 objects are available and most users will want to use those. The
-:meth:`~obspy.core.stream.Stream.attach_response()` method will attach matching
-responses to each trace if they are available within the inventory object. The
 :meth:`~obspy.core.stream.Stream.remove_response()` method deconvolves the
 instrument response in-place. As always see the corresponding docs pages for a
 full list of options and a more detailed explanation.
@@ -183,9 +198,8 @@ full list of options and a more detailed explanation.
 >>> from obspy import read
 >>> st = read()
 >>> inv = read_inventory("/path/to/BW_RJOB.xml")
->>> st.attach_response(inv)  # doctest: +NORMALIZE_WHITESPACE
- []
->>> st.remove_response(output="VEL", water_level=20)  # doctest: +ELLIPSIS
+>>> st.remove_response(
+...     inventory=inv, output="VEL", water_level=20)  # doctest: +ELLIPSIS
 <obspy.core.stream.Stream object at 0x...>
 
 Writing
@@ -195,10 +209,6 @@ StationXML files, e.g. after making modifications.
 
 >>> inv.write('my_inventory.xml', format='STATIONXML')  # doctest: +SKIP
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 # Don't change order! .util must be first.
 from .util import (Angle, Azimuth, BaseNode, ClockDrift, Comment, Dip,
                    Distance, Equipment, ExternalReference, Frequency, Latitude,

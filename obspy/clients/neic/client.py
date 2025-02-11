@@ -8,18 +8,14 @@ NEIC CWB Query service client for ObsPy.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 import io
 import socket
 import traceback
 from time import sleep
 
 from obspy import Stream, UTCDateTime, read
-from .util import ascdate, asctime
-from ..httpproxy import get_proxy_tuple, http_proxy_connect
+from obspy.clients.neic.util import ascdate, asctime
+from obspy.clients.httpproxy import get_proxy_tuple, http_proxy_connect
 
 
 class Client(object):
@@ -45,15 +41,15 @@ class Client(object):
     >>> st = client.get_waveforms("IU", "ANMO", "00", "BH?", t, t + 10)
     >>> print(st)  # doctest: +ELLIPSIS
     3 Trace(s) in Stream:
-    IU.ANMO.00.BH... | 20.0 Hz, 201 samples
-    IU.ANMO.00.BH... | 20.0 Hz, 201 samples
-    IU.ANMO.00.BH... | 20.0 Hz, 201 samples
+    IU.ANMO.00.BH... | 40.0 Hz, 401 samples
+    IU.ANMO.00.BH... | 40.0 Hz, 401 samples
+    IU.ANMO.00.BH... | 40.0 Hz, 401 samples
     >>> st = client.get_waveforms_nscl("IUANMO BH.00", t, 10)
     >>> print(st)  # doctest: +ELLIPSIS
     3 Trace(s) in Stream:
-    IU.ANMO.00.BH... | 20.0 Hz, 201 samples
-    IU.ANMO.00.BH... | 20.0 Hz, 201 samples
-    IU.ANMO.00.BH... | 20.0 Hz, 201 samples
+    IU.ANMO.00.BH... | 40.0 Hz, 401 samples
+    IU.ANMO.00.BH... | 40.0 Hz, 401 samples
+    IU.ANMO.00.BH... | 40.0 Hz, 401 samples
     """
     def __init__(self, host="137.227.224.97", port=2061, timeout=30,
                  debug=False):
@@ -112,9 +108,9 @@ class Client(object):
         >>> st = client.get_waveforms("IU", "ANMO", "0?", "BH?", t, t + 10)
         >>> print(st)  # doctest: +ELLIPSIS
         3 Trace(s) in Stream:
-        IU.ANMO.00.BH... | 20.0 Hz, 201 samples
-        IU.ANMO.00.BH... | 20.0 Hz, 201 samples
-        IU.ANMO.00.BH... | 20.0 Hz, 201 samples
+        IU.ANMO.00.BH... | 40.0 Hz, 401 samples
+        IU.ANMO.00.BH... | 40.0 Hz, 401 samples
+        IU.ANMO.00.BH... | 40.0 Hz, 401 samples
         """
         # padding channel with spaces does not make sense
         if len(channel) < 3 and channel != ".*":
@@ -163,12 +159,12 @@ class Client(object):
         >>> st = client.get_waveforms_nscl("IUANMO BH.00", t, 10)
         >>> print(st)  # doctest: +ELLIPSIS
         3 Trace(s) in Stream:
-        IU.ANMO.00.BH... | 20.0 Hz, 201 samples
-        IU.ANMO.00.BH... | 20.0 Hz, 201 samples
-        IU.ANMO.00.BH... | 20.0 Hz, 201 samples
+        IU.ANMO.00.BH... | 40.0 Hz, 401 samples
+        IU.ANMO.00.BH... | 40.0 Hz, 401 samples
+        IU.ANMO.00.BH... | 40.0 Hz, 401 samples
         """
         start = str(UTCDateTime(starttime)).replace("T", " ").replace("Z", "")
-        line = "'-dbg' '-s' '%s' '-b' '%s' '-d' '%s'\t" % \
+        line = "'-s' '%s' '-b' '%s' '-d' '%s'\t" % \
             (seedname, start, duration)
         if self.debug:
             print(ascdate() + " " + asctime() + " line=" + line)
@@ -184,14 +180,16 @@ class Client(object):
         while not success:
             try:
                 if self.proxy:
-                    s, _, _ = http_proxy_connect(address, proxy, auth)
+                    s, _, _ = http_proxy_connect(address, proxy, auth,
+                                                 timeout=self.timeout)
                     # This socket is already connected to the proxy
                 else:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    if self.timeout is not None:
+                        s.settimeout(self.timeout)
                     s.connect((self.host, self.port))
 
                 with io.BytesIO() as tf:
-                    s.setblocking(0)
                     s.send(line.encode('ascii', 'strict'))
                     if self.debug:
                         print(ascdate(), asctime(), "Connected - start reads")
@@ -216,7 +214,7 @@ class Client(object):
                                 tf.seek(0)
                                 try:
                                     st = read(tf, 'MSEED')
-                                except Exception as e:
+                                except Exception:
                                     st = Stream()
                                 st.trim(starttime, starttime + duration)
                                 s.close()
@@ -226,7 +224,7 @@ class Client(object):
                                 totlen += len(data)
                                 tf.write(data)
                                 slept = 0
-                        except socket.error as e:
+                        except socket.error:
                             if slept > maxslept:
                                 print(ascdate(), asctime(),
                                       "Timeout on connection",
@@ -235,7 +233,7 @@ class Client(object):
                                 s.close()
                             sleep(0.05)
                             slept += 1
-            except socket.error as e:
+            except socket.error:
                 print(traceback.format_exc())
                 print("CWB QueryServer at " + self.host + "/" + str(self.port))
                 raise

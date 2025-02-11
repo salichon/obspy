@@ -9,16 +9,11 @@ Various additional utilities for obspy.signal.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-from future.utils import native
-
-import ctypes as C
-import math as M
+import ctypes as C  # NOQA
+import math
 
 import numpy as np
-from scipy import fftpack, fix, signal
+from scipy import fftpack, signal
 
 from obspy.core.util.misc import factorize_int
 from obspy.signal.headers import clibsignal
@@ -91,8 +86,8 @@ def next_pow_2(i):
     256
     """
     # do not use NumPy here, math is much faster for single values
-    buf = M.ceil(M.log(i) / M.log(2))
-    return native(int(M.pow(2, buf)))
+    buf = math.ceil(math.log(i) / math.log(2))
+    return int(math.pow(2, buf))
 
 
 def prev_pow_2(i):
@@ -105,7 +100,7 @@ def prev_pow_2(i):
     128
     """
     # do not use NumPy here, math is much faster for single values
-    return int(M.pow(2, M.floor(M.log(i, 2))))
+    return int(math.pow(2, math.floor(math.log(i, 2))))
 
 
 def nearest_pow_2(x):
@@ -115,8 +110,8 @@ def nearest_pow_2(x):
     the input and returns them if they are closer than the next bigger power
     of 2.
     """
-    a = M.pow(2, M.ceil(M.log(x, 2)))
-    b = M.pow(2, M.floor(M.log(x, 2)))
+    a = math.pow(2, math.ceil(math.log(x, 2)))
+    b = math.pow(2, math.floor(math.log(x, 2)))
     if abs(a - x) < abs(b - x):
         return int(a)
     else:
@@ -129,6 +124,7 @@ def enframe(x, win, inc):
     of inc. Each frame is multiplied by the window win().
     The length of the frames is given by the length of the window win().
     The centre of frame I is x((I-1)*inc+(length(win)+1)/2) for I=1,2,...
+    The mean is also subtracted from each individual frame.
 
     :param x: signal to split in frames
     :param win: window multiplied to each frame, length determines frame length
@@ -143,7 +139,7 @@ def enframe(x, win, inc):
     else:
         # length = next_pow_2(nwin)
         length = nwin
-    nf = int(fix((nx - length + inc) // inc))
+    nf = int(np.fix((nx - length + inc) // inc))
     # f = np.zeros((nf, length))
     indf = inc * np.arange(nf)
     inds = np.arange(length) + 1
@@ -177,7 +173,7 @@ def smooth(x, smoothie):
             # out = signal.lfilter(np.ones(smoothie) / smoothie, 1, help)
             out = signal.lfilter(
                 np.hstack((np.ones(smoothie) / (2 * smoothie), 0,
-                          np.ones(smoothie) / (2 * smoothie))), 1, help)
+                           np.ones(smoothie) / (2 * smoothie))), 1, help)
             out = np.transpose(out)
             # out = out[smoothie:len(out), :]
             out = out[2 * smoothie:len(out), :]
@@ -225,7 +221,7 @@ def rdct(x, n=0):
                       axis=1)
         x = x[0, :, :]
         z = np.append(np.sqrt(2.), 2. * np.exp((-0.5j * float(np.pi / n)) *
-                      np.arange(1, n)))
+                                               np.arange(1, n)))
         y = np.real(np.multiply(np.transpose(fftpack.fft(np.transpose(x))),
                     np.transpose(np.array([z])) * np.ones(k))) / float(a)
         return y
@@ -295,6 +291,41 @@ def _npts2nfft(npts, smart=True):
             nfft = next_pow_2(nfft)
 
     return nfft
+
+
+def stack(data, stack_type='linear'):
+    """
+    Stack data by first axis.
+
+    :type stack_type: str or tuple
+    :param stack_type: Type of stack, one of the following:
+        ``'linear'``: average stack (default),
+        ``('pw', order)``: phase weighted stack of given order
+        (see [Schimmel1997]_, order 0 corresponds to linear stack),
+        ``('root', order)``: root stack of given order
+        (order 1 corresponds to linear stack).
+    """
+    if stack_type == 'linear':
+        stack = np.mean(data, axis=0)
+    elif stack_type[0] == 'pw':
+        from scipy.signal import hilbert
+        try:
+            from scipy.fftpack import next_fast_len
+        except ImportError:  # scipy < 0.18
+            next_fast_len = next_pow_2
+        npts = np.shape(data)[1]
+        nfft = next_fast_len(npts)
+        anal_sig = hilbert(data, N=nfft)[:, :npts]
+        norm_anal_sig = anal_sig / np.abs(anal_sig)
+        phase_stack = np.abs(np.mean(norm_anal_sig, axis=0)) ** stack_type[1]
+        stack = np.mean(data, axis=0) * phase_stack
+    elif stack_type[0] == 'root':
+        r = np.mean(np.sign(data) * np.abs(data)
+                    ** (1 / stack_type[1]), axis=0)
+        stack = np.sign(r) * np.abs(r) ** stack_type[1]
+    else:
+        raise ValueError('stack type is not valid.')
+    return stack
 
 
 if __name__ == '__main__':

@@ -1,12 +1,7 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 Slowness model class.
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 from copy import deepcopy
 import math
 
@@ -20,6 +15,7 @@ from .slowness_layer import (bullen_depth_for,
                              evaluate_at_bullen)
 from .velocity_layer import (VelocityLayer, evaluate_velocity_at_bottom,
                              evaluate_velocity_at_top)
+from .utils import _flat
 
 
 def _fix_critical_depths(critical_depths, layer_num, is_p_wave):
@@ -110,7 +106,7 @@ class SlownessModel(object):
             desc += str(fl.top_depth) + "," + str(fl.bot_depth) + " "
         desc += "\n"
         desc += "\n**** P Layers ****************\n"
-        for l in self.p_layers:
+        for l in self.p_layers:  # NOQA
             desc += str(l) + "\n"
         return desc
 
@@ -185,9 +181,8 @@ class SlownessModel(object):
         min_s_so_far = 1.1e300
         # First remove any critical points previously stored
         # so these are effectively re-initialised... it's probably silly
-        self.critical_depths = np.empty(
-            max(len(self.v_mod.layers), 3),
-            dtype=CriticalDepth)
+        self.critical_depths = np.zeros(len(self.v_mod.layers) + 1,
+                                        dtype=CriticalDepth)
         cd_count = 0
         self.high_slowness_layer_depths_p = []  # lists of DepthRange
         self.high_slowness_layer_depths_s = []
@@ -902,7 +897,8 @@ class SlownessModel(object):
         :type is_p_wave: bool
 
         :returns: The slowness layer(s).
-        :rtype: :class:`~numpy.ndarray` (dtype = :const:`Slowness_layer`,
+        :rtype: :class:`~numpy.ndarray`
+            (dtype = :class:`obspy.taup.helper_classes.SlownessLayer`,
             shape = ``layer_num.shape``)
         """
         if is_p_wave:
@@ -1017,8 +1013,8 @@ class SlownessModel(object):
             new_count = np.ceil(absdiff / self.max_delta_p).astype(np.int_)
             steps = diff / new_count
 
-            for start, Np, delta in zip(top_p, new_count, steps):
-                for j in range(1, Np):
+            for start, n, delta in zip(top_p, new_count, steps):
+                for j in range(1, n):
                     newp = start + j * delta
                     self.add_slowness(newp, self.p_wave)
                     self.add_slowness(newp, self.s_wave)
@@ -1046,8 +1042,8 @@ class SlownessModel(object):
             new_count = np.ceil(diff / self.max_depth_interval).astype(np.int_)
             steps = diff / new_count
 
-            for start, Nd, delta in zip(top_depth, new_count, steps):
-                new_depth = start + np.arange(1, Nd) * delta
+            for start, nd, delta in zip(top_depth, new_count, steps):
+                new_depth = start + np.arange(1, nd) * delta
                 if wave == self.s_wave:
                     velocity = self.v_mod.evaluate_above(new_depth, 'S')
 
@@ -1200,7 +1196,8 @@ class SlownessModel(object):
                 print("Number of " + ("P" if curr_wave_type else "S") +
                       " slowness layers: " + str(j))
 
-    def depth_in_high_slowness(self, depth, ray_param, is_p_wave):
+    def depth_in_high_slowness(self, depth, ray_param, is_p_wave,
+                               return_depth_range=False):
         """
         Determine if depth and slowness are within a high slowness zone.
 
@@ -1213,10 +1210,6 @@ class SlownessModel(object):
         turn at the top and the bottom, is in the zone at the top, but out of
         the zone at the bottom. (?)
 
-        NOTE: I changed this method a bit by throwing out some seemingly
-        useless copying of the values in temp_range, which I think are not used
-        anywhere else.
-
         :param depth: The depth to check, in km.
         :type depth: float
         :param ray_param: The slowness to check, in s/km.
@@ -1224,9 +1217,12 @@ class SlownessModel(object):
         :param is_p_wave: Whether to check the P wave (``True``) or the S wave
             (``False``).
         :type is_p_wave: bool
+        :param return_depth_range: Whether to also return the DepthRange of
+            the high slowness zone.
 
         :returns: ``True`` if within a high slowness zone, ``False`` otherwise.
-        :rtype: bool
+            If return_depth_range is ``True``, also returns a DepthRange object
+        :rtype: bool, or (bool, DepthRange)
         """
         if is_p_wave:
             high_slowness_layer_depths = self.high_slowness_layer_depths_p
@@ -1237,7 +1233,11 @@ class SlownessModel(object):
                 if ray_param > temp_range.ray_param \
                         or (ray_param == temp_range.ray_param and
                             depth == temp_range.top_depth):
+                    if return_depth_range:
+                        return True, temp_range
                     return True
+        if return_depth_range:
+            return False, None
         return False
 
     def approx_distance(self, slowness_turn_layer, p, is_p_wave):
@@ -1257,7 +1257,8 @@ class SlownessModel(object):
         :type is_p_wave: bool
 
         :returns: The time (in s) and distance (in rad) the ray travels.
-        :rtype: :class:`~numpy.ndarray` (dtype = :const:`TimeDist`, shape =
+        :rtype: :class:`~numpy.ndarray`
+            (dtype = :class:`obspy.taup.helper_classes.TimeDist`, shape =
             (``slowness_turn_layer``, ))
         """
         # First, if the slowness model contains less than slowness_turn_layer
@@ -1312,7 +1313,8 @@ class SlownessModel(object):
 
         :returns: The time (in s) and distance (in rad) increments for the
             specified ray(s) and layer(s).
-        :rtype: :class:`~numpy.ndarray` (dtype = :const:`TimeDist`, shape =
+        :rtype: :class:`~numpy.ndarray`
+            (dtype = :class:`obspy.taup.helper_classes.TimeDist`, shape =
             ``spherical_ray_param.shape`` or ``layer_num.shape``)
 
         :raises SlownessModelError: If the ray with the given spherical ray
@@ -1325,15 +1327,15 @@ class SlownessModel(object):
         ldim = np.ndim(layer_num)
 
         if ldim == 1 and pdim == 0:
-            time = np.empty(shape=layer_num.shape, dtype=np.float_)
-            dist = np.empty(shape=layer_num.shape, dtype=np.float_)
+            time = np.empty(shape=layer_num.shape, dtype=np.float64)
+            dist = np.empty(shape=layer_num.shape, dtype=np.float64)
         elif ldim == 0 and pdim == 1:
-            time = np.empty(shape=spherical_ray_param.shape, dtype=np.float_)
-            dist = np.empty(shape=spherical_ray_param.shape, dtype=np.float_)
+            time = np.empty(shape=spherical_ray_param.shape, dtype=np.float64)
+            dist = np.empty(shape=spherical_ray_param.shape, dtype=np.float64)
         elif ldim == pdim and (ldim == 0 or
                                layer_num.shape == spherical_ray_param.shape):
-            time = np.empty(shape=layer_num.shape, dtype=np.float_)
-            dist = np.empty(shape=layer_num.shape, dtype=np.float_)
+            time = np.empty(shape=layer_num.shape, dtype=np.float64)
+            dist = np.empty(shape=layer_num.shape, dtype=np.float64)
         else:
             raise TypeError('Either spherical_ray_param or layer_num must be '
                             '0D, or they must have the same shape.')
@@ -1585,13 +1587,13 @@ class SlownessModel(object):
                 prev_depth = high_s_zone_depth.bot_depth
         # Check for inconsistencies in fluid zones.
         prev_depth = -1e300
-        for fluidZone in self.fluid_layer_depths:
-            if fluidZone.top_depth >= fluidZone.bot_depth:
+        for fluid_zone in self.fluid_layer_depths:
+            if fluid_zone.top_depth >= fluid_zone.bot_depth:
                 raise SlownessModelError(
                     "Fluid zone has zero or negative thickness!")
-            if fluidZone.top_depth <= prev_depth:
+            if fluid_zone.top_depth <= prev_depth:
                 raise SlownessModelError("Fluid zone overlaps previous zone.")
-            prev_depth = fluidZone.bot_depth
+            prev_depth = fluid_zone.bot_depth
         # Check for inconsistencies in slowness layers.
         for layers in [self.p_layers, self.s_layers]:
             if layers is None:
@@ -1803,6 +1805,7 @@ class SlownessModel(object):
             out[other_index[0]] = new_bot_layer
             out = np.insert(out, other_index[0], new_top_layer)
 
+        number_added = 0
         for other_layer_num, s_layer in enumerate(out.copy()):
             if (s_layer['top_p'] - p) * (p - s_layer['bot_p']) > 0:
                 # Found a slowness layer with the other wave type that
@@ -1813,12 +1816,13 @@ class SlownessModel(object):
                     dtype=SlownessLayer)
                 bot_layer = (p, top_layer['bot_depth'],
                              s_layer['bot_p'], s_layer['bot_depth'])
-                out[other_layer_num] = bot_layer
-                out = np.insert(out, other_layer_num, top_layer)
+                out[other_layer_num+number_added] = _flat(bot_layer)
+                out = np.insert(out, other_layer_num+number_added, top_layer)
                 # Fix critical layers since we have added a slowness layer.
                 _fix_critical_depths(critical_depths,
                                      other_layer_num, not is_p_wave)
                 # Skip next layer as it was just added: achieved by slicing
                 # the list iterator.
+                number_added += 1
 
         return out

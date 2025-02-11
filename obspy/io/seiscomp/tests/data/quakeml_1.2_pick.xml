@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <q:quakeml xmlns:q="http://quakeml.org/xmlns/quakeml/1.2" xmlns="http://quakeml.org/xmlns/bed/1.2">
-  <eventParameters publicID="smi:eu.emsc/unid">
+  <eventParameters publicID="smi:org.gfz-potsdam.de/geofon/NA">
     <event publicID="smi:ch.ethz.sed/event/historical/1165">
       <pick publicID="smi:ch.ethz.sed/pick/117634">
         <time>
@@ -57,11 +57,11 @@
         <longitude>
           <value>142.373</value>
         </longitude>
-        <arrival publicID="smi:ch.ethz.sed/pick/117634#smi_ch.ethz.sed/event/historical/1165/origin/1">
+        <arrival publicID="smi:ch.ethz.sed/pick/117634_smi_ch.ethz.sed/event/historical/1165/origin/1">
           <pickID>smi:ch.ethz.sed/pick/117634</pickID>
           <phase>Pn</phase>
         </arrival>
-        <arrival publicID="smi:geonet.org.nz/pick/4965421#smi_ch.ethz.sed/event/historical/1165/origin/1">
+        <arrival publicID="smi:geonet.org.nz/pick/4965421_smi_ch.ethz.sed/event/historical/1165/origin/1">
           <pickID>smi:geonet.org.nz/pick/4965421</pickID>
           <phase>Pn</phase>
         </arrival>

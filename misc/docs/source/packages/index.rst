@@ -1,6 +1,6 @@
-=======================
-ObsPy Library Reference
-=======================
+============
+API Overview
+============
 
 ObsPy's functionality is provided through the following packages.
 
@@ -15,7 +15,6 @@ categories.*
     :nosignatures:
 
     obspy.core
-    obspy.db
     obspy.geodetics
     obspy.imaging
     obspy.realtime
@@ -37,7 +36,6 @@ categories.*
     obspy.scripts.reftekrescue
     obspy.scripts.print
     obspy.scripts.sds_html_report
-    obspy.db.scripts.indexer
     obspy.imaging.scripts.scan
     obspy.imaging.scripts.plot
     obspy.imaging.scripts.mopad
@@ -55,7 +53,6 @@ categories.*
     :toctree: .
     :nosignatures:
 
-    obspy.clients.arclink
     obspy.clients.earthworm
     obspy.clients.fdsn
     obspy.clients.filesystem
@@ -63,7 +60,6 @@ categories.*
     obspy.clients.neic
     obspy.clients.nrl
     obspy.clients.seedlink
-    obspy.clients.seishub
     obspy.clients.syngine
 
 
@@ -91,8 +87,11 @@ categories.*
     :nosignatures:
 
     obspy.io.ah
+    obspy.io.alsep
     obspy.io.ascii
     obspy.io.css
+    obspy.io.cybershake
+    obspy.io.dmx
     obspy.io.gcf
     obspy.io.gse2
     obspy.io.kinemetrics
@@ -100,6 +99,7 @@ categories.*
     obspy.io.nied.knet
     obspy.io.pdas
     obspy.io.reftek
+    obspy.io.rg16
     obspy.io.sac
     obspy.io.seisan
     obspy.io.seg2
@@ -107,7 +107,7 @@ categories.*
     obspy.io.sh
     obspy.io.wav
     obspy.io.win
-   obspy.io.y
+    obspy.io.y
 
 .. rubric:: Event Data Import/Export Plug-ins
 
@@ -133,19 +133,23 @@ categories.*
 
     obspy.io.cmtsolution
     obspy.io.cnv
-    obspy.io.iaspei
+    obspy.io.csv
+    obspy.io.focmec
     obspy.io.gse2
+    obspy.io.hypodd
+    obspy.io.iaspei
     obspy.io.json
     obspy.io.kml
     obspy.io.ndk
     obspy.io.nied.fnetmt
+    obspy.io.nied.knet
     obspy.io.nlloc
     obspy.io.nordic
     obspy.io.pde
-    obspy.io.seiscomp
-    obspy.io.scardec
-    obspy.io.shapefile
     obspy.io.quakeml
+    obspy.io.scardec
+    obspy.io.seiscomp
+    obspy.io.shapefile
     obspy.io.zmap
 
 .. rubric:: Inventory Data Import/Export Plug-ins
@@ -172,7 +176,6 @@ categories.*
     :toctree: .
     :nosignatures:
 
-    obspy.io.arclink
     obspy.io.css
     obspy.io.kml
     obspy.io.sac.sacpz

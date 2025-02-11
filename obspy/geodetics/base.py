@@ -8,15 +8,10 @@ Various geodetic utilities for ObsPy.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 import math
 import warnings
 
 import numpy as np
-from scipy.stats import circmean
 
 from obspy.core.util.misc import to_int_or_zero
 
@@ -38,6 +33,31 @@ except ImportError:
 
 WGS84_A = 6378137.0
 WGS84_F = 1 / 298.257223563
+
+
+def _check_latitude(latitude, variable_name='latitude'):
+    """
+    Check whether latitude is in the -90 to +90 range.
+    """
+    if latitude is None:
+        return
+    if latitude > 90 or latitude < -90:
+        msg = '{} out of bounds! (-90 <= {} <=90)'.format(
+            variable_name, variable_name)
+        raise ValueError(msg)
+
+
+def _normalize_longitude(longitude):
+    """
+    Normalize longitude in the -180 to +180 range.
+    """
+    if longitude is None:
+        return
+    while longitude > 180:
+        longitude -= 360
+    while longitude < -180:
+        longitude += 360
+    return longitude
 
 
 def calc_vincenty_inverse(lat1, lon1, lat2, lon2, a=WGS84_A, f=WGS84_F):
@@ -71,12 +91,10 @@ matplotlib/files/matplotlib-toolkits/basemap-0.9.5/
 
         Algorithm from Geocentric Datum of Australia Technical Manual.
 
-        * http://www.icsm.gov.au/gda/
-        * http://www.icsm.gov.au/gda/gdatm/gdav2.3.pdf, pp. 15
+        * https://www.icsm.gov.au/publications
+        * https://www.icsm.gov.au/publications/gda2020-technical-manual-v16
 
         It states::
-
-            Computations on the Ellipsoid
 
             There are a number of formulae that are available to calculate
             accurate geodetic positions, azimuths and distances on the
@@ -94,24 +112,14 @@ matplotlib/files/matplotlib-toolkits/basemap-0.9.5/
               azimuth and distance.
     """
     # Check inputs
-    if lat1 > 90 or lat1 < -90:
-        msg = "Latitude of Point 1 out of bounds! (-90 <= lat1 <=90)"
-        raise ValueError(msg)
-    while lon1 > 180:
-        lon1 -= 360
-    while lon1 < -180:
-        lon1 += 360
-    if lat2 > 90 or lat2 < -90:
-        msg = "Latitude of Point 2 out of bounds! (-90 <= lat2 <=90)"
-        raise ValueError(msg)
-    while lon2 > 180:
-        lon2 -= 360
-    while lon2 < -180:
-        lon2 += 360
+    _check_latitude(lat1, 'lat1')
+    lon1 = _normalize_longitude(lon1)
+    _check_latitude(lat2, 'lat2')
+    lon2 = _normalize_longitude(lon2)
 
     b = a * (1 - f)  # semiminor axis
 
-    if (abs(lat1 - lat2) < 1e-8) and (abs(lon1 - lon2) < 1e-8):
+    if math.isclose(lat1, lat2) and math.isclose(lon1, lon2):
         return 0.0, 0.0, 0.0
 
     # convert latitudes and longitudes to radians:
@@ -140,41 +148,28 @@ matplotlib/files/matplotlib-toolkits/basemap-0.9.5/
                 pow((math.cos(u_1) * math.sin(u_2) - math.sin(u_1) *
                      math.cos(u_2) * math.cos(dlon)), 2)
             sin_sigma = math.sqrt(sqr_sin_sigma)
+
             cos_sigma = math.sin(u_1) * math.sin(u_2) + math.cos(u_1) * \
                 math.cos(u_2) * math.cos(dlon)
             sigma = math.atan2(sin_sigma, cos_sigma)
             sin_alpha = math.cos(u_1) * math.cos(u_2) * math.sin(dlon) / \
-                math.sin(sigma)
-            alpha = math.asin(sin_alpha)
-            cos2sigma_m = math.cos(sigma) - \
-                (2 * math.sin(u_1) * math.sin(u_2) / pow(math.cos(alpha), 2))
-            c = (f / 16) * pow(math.cos(alpha), 2) * \
-                (4 + f * (4 - 3 * pow(math.cos(alpha), 2)))
+                sin_sigma
+
+            sqr_cos_alpha = 1 - sin_alpha * sin_alpha
+            if math.isclose(sqr_cos_alpha, 0):
+                # Equatorial line
+                cos2sigma_m = 0
+            else:
+                cos2sigma_m = cos_sigma - \
+                    (2 * math.sin(u_1) * math.sin(u_2) / sqr_cos_alpha)
+
+            c = (f / 16) * sqr_cos_alpha * (4 + f * (4 - 3 * sqr_cos_alpha))
             last_dlon = dlon
-            dlon = omega + (1 - c) * f * math.sin(alpha) * \
-                (sigma + c * math.sin(sigma) *
-                    (cos2sigma_m + c * math.cos(sigma) *
+            dlon = omega + (1 - c) * f * sin_alpha * \
+                (sigma + c * sin_sigma *
+                    (cos2sigma_m + c * cos_sigma *
                         (-1 + 2 * pow(cos2sigma_m, 2))))
 
-            u2 = pow(math.cos(alpha), 2) * (a * a - b * b) / (b * b)
-            _a = 1 + (u2 / 16384) * (4096 + u2 * (-768 + u2 *
-                                                  (320 - 175 * u2)))
-            _b = (u2 / 1024) * (256 + u2 * (-128 + u2 * (74 - 47 * u2)))
-            delta_sigma = _b * sin_sigma * \
-                (cos2sigma_m + (_b / 4) *
-                    (cos_sigma * (-1 + 2 * pow(cos2sigma_m, 2)) - (_b / 6) *
-                        cos2sigma_m * (-3 + 4 * sqr_sin_sigma) *
-                        (-3 + 4 * pow(cos2sigma_m, 2))))
-
-            dist = b * _a * (sigma - delta_sigma)
-            alpha12 = math.atan2(
-                (math.cos(u_2) * math.sin(dlon)),
-                (math.cos(u_1) * math.sin(u_2) -
-                 math.sin(u_1) * math.cos(u_2) * math.cos(dlon)))
-            alpha21 = math.atan2(
-                (math.cos(u_1) * math.sin(dlon)),
-                (-math.sin(u_1) * math.cos(u_2) +
-                 math.cos(u_1) * math.sin(u_2) * math.cos(dlon)))
             iterlimit -= 1
             if iterlimit < 0:
                 # iteration limit reached
@@ -182,6 +177,25 @@ matplotlib/files/matplotlib-toolkits/basemap-0.9.5/
     except ValueError:
         # usually "math domain error"
         raise StopIteration
+
+    u2 = sqr_cos_alpha * (a * a - b * b) / (b * b)
+    _a = 1 + (u2 / 16384) * (4096 + u2 * (-768 + u2 * (320 - 175 * u2)))
+    _b = (u2 / 1024) * (256 + u2 * (-128 + u2 * (74 - 47 * u2)))
+    delta_sigma = _b * sin_sigma * \
+        (cos2sigma_m + (_b / 4) *
+            (cos_sigma * (-1 + 2 * pow(cos2sigma_m, 2)) - (_b / 6) *
+                cos2sigma_m * (-3 + 4 * sqr_sin_sigma) *
+                (-3 + 4 * pow(cos2sigma_m, 2))))
+
+    dist = b * _a * (sigma - delta_sigma)
+    alpha12 = math.atan2(
+        (math.cos(u_2) * math.sin(dlon)),
+        (math.cos(u_1) * math.sin(u_2) -
+            math.sin(u_1) * math.cos(u_2) * math.cos(dlon)))
+    alpha21 = math.atan2(
+        (math.cos(u_1) * math.sin(dlon)),
+        (-math.sin(u_1) * math.cos(u_2) +
+            math.cos(u_1) * math.sin(u_2) * math.cos(dlon)))
 
     if alpha12 < 0.0:
         alpha12 = alpha12 + (2.0 * math.pi)
@@ -226,17 +240,13 @@ def gps2dist_azimuth(lat1, lon1, lat2, lon2, a=WGS84_A, f=WGS84_F):
         for converting between geographic, UTM, UPS, MGRS, and geocentric
         coordinates, for geoid calculations, and for solving geodesic problems.
         Otherwise the locally implemented Vincenty's Inverse formulae
-        (:func:`obspy.core.util.geodetics.calc_vincenty_inverse`) is used which
+        (:func:`obspy.geodetics.base.calc_vincenty_inverse`) is used which
         has known limitations for two nearly antipodal points and is ca. 4x
         slower.
     """
     if HAS_GEOGRAPHICLIB:
-        if lat1 > 90 or lat1 < -90:
-            msg = "Latitude of Point 1 out of bounds! (-90 <= lat1 <=90)"
-            raise ValueError(msg)
-        if lat2 > 90 or lat2 < -90:
-            msg = "Latitude of Point 2 out of bounds! (-90 <= lat2 <=90)"
-            raise ValueError(msg)
+        _check_latitude(lat1, 'lat1')
+        _check_latitude(lat2, 'lat2')
         result = Geodesic(a=a, f=f).Inverse(lat1, lon1, lat2, lon2)
         azim = result['azi1']
         if azim < 0:
@@ -246,7 +256,7 @@ def gps2dist_azimuth(lat1, lon1, lat2, lon2, a=WGS84_A, f=WGS84_F):
     else:
         try:
             values = calc_vincenty_inverse(lat1, lon1, lat2, lon2, a, f)
-            if np.alltrue(np.isnan(values)):
+            if np.all(np.isnan(values)):
                 raise StopIteration
             return values
         except StopIteration:
@@ -261,14 +271,14 @@ def gps2dist_azimuth(lat1, lon1, lat2, lon2, a=WGS84_A, f=WGS84_F):
             raise e
 
 
-def kilometers2degrees(kilometer, radius=6371):
+def kilometers2degrees(kilometer, radius=6371.0):
     """
     Convenience function to convert kilometers to degrees assuming a perfectly
     spherical Earth.
 
     :type kilometer: float
     :param kilometer: Distance in kilometers
-    :type radius: int, optional
+    :type radius: float, optional
     :param radius: Radius of the Earth used for the calculation.
     :rtype: float
     :return: Distance in degrees as a floating point number.
@@ -285,14 +295,14 @@ def kilometers2degrees(kilometer, radius=6371):
 kilometer2degrees = kilometers2degrees
 
 
-def degrees2kilometers(degrees, radius=6371):
+def degrees2kilometers(degrees, radius=6371.0):
     """
     Convenience function to convert (great circle) degrees to kilometers
     assuming a perfectly spherical Earth.
 
     :type degrees: float
     :param degrees: Distance in (great circle) degrees
-    :type radius: int, optional
+    :type radius: float, optional
     :param radius: Radius of the Earth used for the calculation.
     :rtype: float
     :return: Distance in kilometers as a floating point number.
@@ -330,8 +340,8 @@ def locations2degrees(lat1, long1, lat2, long2):
     .. rubric:: Example
 
     >>> from obspy.geodetics import locations2degrees
-    >>> locations2degrees(5, 5, 10, 10)
-    7.0397014191753815
+    >>> locations2degrees(5, 5, 10, 10) # doctest: +ELLIPSIS
+    7.03970141917538...
     """
     # broadcast explicitly here so it raises once instead of somewhere in the
     # middle if things can't be broadcast
@@ -369,12 +379,105 @@ def mean_longitude(longitudes):
     :param longitudes: Geographical longitude values ranging from -180 to 180
         in degrees.
     """
+    from scipy.stats import circmean
     mean_longitude = circmean(np.array(longitudes), low=-180, high=180)
-    while mean_longitude < -180:
-        mean_longitude += 360
-    while mean_longitude > 180:
-        mean_longitude -= 360
+    mean_longitude = _normalize_longitude(mean_longitude)
     return mean_longitude
+
+
+def inside_geobounds(obj, minlatitude=None, maxlatitude=None,
+                     minlongitude=None, maxlongitude=None,
+                     latitude=None, longitude=None,
+                     minradius=None, maxradius=None):
+    """
+    Check whether an object is within a given latitude and/or longitude range,
+    or within a given distance range from a reference geographic point.
+
+    The object must have ``latitude`` and ``longitude`` attributes, expressed
+    in degrees.
+
+    :type obj: object
+    :param obj: An object with `latitude` and `longitude` attributes.
+    :type minlatitude: float
+    :param minlatitude: Minimum latitude in degrees.
+    :type maxlatitude: float
+    :param maxlatitude: Maximum latitude in degrees. If this value is smaller
+        than ``minlatitude``, then 360 degrees are added to this value (i.e.,
+        wrapping around latitude of +/- 180 degrees)
+    :type minlongitude: float
+    :param minlongitude: Minimum longitude in degrees.
+    :type maxlongitude: float
+    :param maxlongitude: Minimum longitude in degrees.
+    :type latitude: float
+    :param latitude: Latitude of the reference point, in degrees, for distance
+        range selection.
+    :type longitude: float
+    :param longitude: Longitude of the reference point, in degrees, for
+        distance range selection.
+    :type minradius: float
+    :param minradius: Minimum distance, in degrees, from the reference
+        geographic point defined by the latitude and longitude parameters.
+    :type maxradius: float
+    :param maxradius: Maximum distance, in degrees, from the reference
+        geographic point defined by the latitude and longitude parameters.
+    :return: ``True`` if the object is within the given range, ``False``
+        otherwise.
+
+    .. rubric:: Example
+
+    >>> from obspy.geodetics import inside_geobounds
+    >>> from obspy import read_events
+    >>> ev = read_events()[0]
+    >>> orig = ev.origins[0]
+    >>> inside_geobounds(orig, minlatitude=40, maxlatitude=42)
+    True
+    >>> inside_geobounds(orig, minlatitude=40, maxlatitude=42,
+    ...                  minlongitude=78, maxlongitude=79)
+    False
+    >>> inside_geobounds(orig, latitude=40, longitude=80,
+    ...                  minradius=1, maxradius=10)
+    True
+    """
+    if not hasattr(obj, 'latitude') or not hasattr(obj, 'longitude'):
+        raise AttributeError(
+            'Object must have "latitude" and "longitude" attributes.')
+    olatitude = obj.latitude
+    _check_latitude(olatitude, 'obj.latitude')
+    _check_latitude(minlatitude, 'minlatitude')
+    _check_latitude(maxlatitude, 'maxlatitude')
+    _check_latitude(latitude, 'latitude')
+    # Make sure longitudes are between -180 to 180 degrees
+    olongitude = _normalize_longitude(obj.longitude)
+    minlongitude = _normalize_longitude(minlongitude)
+    maxlongitude = _normalize_longitude(maxlongitude)
+    longitude = _normalize_longitude(longitude)
+    if minlatitude is not None:
+        if olatitude is None or olatitude < minlatitude:
+            return False
+    if maxlatitude is not None:
+        if olatitude is None or olatitude > maxlatitude:
+            return False
+    # Wrap longitude around +/- 180°, if necessary
+    if None not in [minlongitude, maxlongitude] \
+            and maxlongitude < minlongitude:
+        maxlongitude += 360
+        if olongitude is not None and olongitude < minlongitude:
+            olongitude += 360
+    if minlongitude is not None:
+        if olongitude is None or olongitude < minlongitude:
+            return False
+    if maxlongitude is not None:
+        if olongitude is None or olongitude > maxlongitude:
+            return False
+    if all([coord is not None for coord in
+           (latitude, longitude, olatitude, olongitude)]):
+        distance = locations2degrees(latitude, longitude,
+                                     olatitude, olongitude)
+        if minradius is not None and distance < minradius:
+            return False
+        if maxradius is not None and distance > maxradius:
+            return False
+    return True
 
 
 if __name__ == '__main__':

@@ -8,37 +8,30 @@ Various additional utilities for ObsPy.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.utils import PY2
-
 import contextlib
 import inspect
 import io
 import itertools
-import locale
 import math
 import os
 import shutil
-from subprocess import STDOUT, CalledProcessError, check_output
 import sys
 import tempfile
 import warnings
-from pkg_resources import load_entry_point
+from subprocess import STDOUT, CalledProcessError, check_output
 
-from future.builtins import *  # NOQA
 
 import numpy as np
-
+from pkg_resources import load_entry_point
 
 WIN32 = sys.platform.startswith('win32')
 
 # The following dictionary maps the first character of the channel_id to the
 # lowest sampling rate this so called Band Code should be used for according
-# to: SEED MANUAL p.124
-# We use this e.g. in seishub.client.getWaveform to request two samples more on
-# both start and end to cut to the samples that really are nearest to requested
-# start/end time afterwards.
+# to SEED MANUAL p.124
+# It can e.g. be used to request additional samples on both start and end to
+# cut to the samples that really are nearest to requested start/end time
+# afterwards.
 BAND_CODE = {'F': 1000.0,
              'G': 1000.0,
              'D': 250.0,
@@ -54,7 +47,8 @@ BAND_CODE = {'F': 1000.0,
              'R': 0.0001,
              'P': 0.000001,
              'T': 0.0000001,
-             'Q': 0.00000001}
+             'Q': 0.00000001
+             }
 
 # Dict that stores results from load entry points
 _ENTRY_POINT_CACHE = {}
@@ -124,7 +118,7 @@ def score_at_percentile(values, per, limit=(), issorted=True):
     >>> score_at_percentile(a, 75, limit=(0, 100))
     42.5
 
-    This function is taken from :func:`scipy.stats.score_at_percentile`.
+    This function is taken from `scipy.stats.score_at_percentile`.
 
     Copyright (c) Gary Strangman
     """
@@ -209,39 +203,6 @@ def to_int_or_zero(value):
         return 0
 
 
-# import numpy loadtxt and check if ndmin parameter is available
-try:
-    from numpy import loadtxt
-    loadtxt(np.array([0]), ndmin=1)
-except TypeError:
-    # otherwise redefine loadtxt
-    def loadtxt(*args, **kwargs):
-        """
-        Replacement for older numpy.loadtxt versions not supporting ndmin
-        parameter.
-        """
-        if 'ndmin' not in kwargs:
-            return np.loadtxt(*args, **kwargs)
-        # ok we got a ndmin param
-        if kwargs['ndmin'] != 1:
-            # for now we support only one dimensional arrays
-            raise NotImplementedError('Upgrade your NumPy version!')
-        del kwargs['ndmin']
-        dtype = kwargs.get('dtype', None)
-        # lets get the data
-        try:
-            data = np.loadtxt(*args, **kwargs)
-        except IOError as e:
-            # raises in older versions if no data could be read
-            if 'reached before encountering data' in str(e):
-                # return empty array
-                return np.array([], dtype=dtype)
-            # otherwise just raise
-            raise
-        # ensures that an array is returned
-        return np.atleast_1d(data)
-
-
 def get_untracked_files_from_git():
     """
     Tries to return a list of files (absolute paths) that are untracked by git
@@ -259,7 +220,7 @@ def get_untracked_files_from_git():
         git_root_dir = p.decode().strip()
         if git_root_dir:
             git_root_dir = os.path.abspath(git_root_dir)
-        if git_root_dir != dir_:
+        if os.path.normcase(git_root_dir) != os.path.normcase(dir_):
             raise ValueError('Git root directory (%s) does not match expected '
                              'path (%s).' % (git_root_dir, dir_))
         p = check_output(['git', 'status', '-u', '--porcelain'],
@@ -273,16 +234,13 @@ def get_untracked_files_from_git():
     return files
 
 
-if PY2:
-    from cStringIO import StringIO as CaptureIO
-else:
-    class CaptureIO(io.TextIOWrapper):
-        def __init__(self):
-            super(CaptureIO, self).__init__(io.BytesIO(), encoding='utf-8',
-                                            newline='\n', write_through=True)
+class CaptureIO(io.TextIOWrapper):
+    def __init__(self):
+        super(CaptureIO, self).__init__(io.BytesIO(), encoding='utf-8',
+                                        newline='\n', write_through=True)
 
-        def getvalue(self):
-            return self.buffer.getvalue().decode('utf-8')
+    def getvalue(self):
+        return self.buffer.getvalue().decode('utf-8')
 
 
 @contextlib.contextmanager
@@ -327,24 +285,14 @@ def CatchOutput():  # NOQA
         if WIN32:
             out.stdout = out.stdout.replace('\r', '')
             out.stderr = out.stderr.replace('\r', '')
-        # remove encoding for PY2 -> we always want PY2 unicode/PY3 str
-        if PY2:
-            if sys.stdout.isatty():
-                out.stdout.decode(sys.stdout.encoding)
-            else:
-                out.stdout.decode(locale.getpreferredencoding())
-            if sys.stderr.isatty():
-                out.stderr.decode(sys.stderr.encoding)
-            else:
-                out.stderr.decode(locale.getpreferredencoding())
 
     if raised:
         raise SystemExit(out.stderr)
 
 
-def _py36_windowsconsoleio_workaround():
+def _py3_windowsconsoleio_workaround():
     """
-    This monkey patch prevents crashing Py3.6 under Windows while using
+    This monkey patch prevents crashing Py >=3.6 under Windows while using
     the SuppressOutput context manager.
 
     Python 3.6 implemented unicode console handling for Windows. This works
@@ -359,9 +307,10 @@ def _py36_windowsconsoleio_workaround():
     The workaround in this case will reopen stdio with a different fd which
     also means a different handle by replicating the logic in
     "Py_lifecycle.c:initstdio/create_stdio".
-    See https://github.com/pytest-dev/py/issues/103
 
+    See https://github.com/pytest-dev/py/issues/103
     See http://bugs.python.org/issue30555
+    See https://github.com/obspy/obspy/issues/3148#issuecomment-1274254892
     """
     if not WIN32 or sys.version_info[:2] < (3, 6):
         return
@@ -386,12 +335,9 @@ def _py36_windowsconsoleio_workaround():
             f.newlines,
             f.line_buffering)
 
-    sys.__stdin__ = sys.stdin = _reopen_stdio(sys.stdin, 'rb')
-    sys.__stdout__ = sys.stdout = _reopen_stdio(sys.stdout, 'wb')
-    sys.__stderr__ = sys.stderr = _reopen_stdio(sys.stderr, 'wb')
-
-
-_py36_windowsconsoleio_workaround()
+    sys.stdin = _reopen_stdio(sys.stdin, 'rb')
+    sys.stdout = _reopen_stdio(sys.stdout, 'wb')
+    sys.stderr = _reopen_stdio(sys.stderr, 'wb')
 
 
 @contextlib.contextmanager
@@ -403,9 +349,10 @@ def SuppressOutput():  # noqa
     ...    os.system('echo "mystdout"')
     ...    os.system('echo "mystderr" >&2')
 
-    Note: Does not work reliably for Windows Python 3.6 under Windows - see
-    function definition of _py36_windowsconsoleio_workaround().
+    Note: Does not work reliably for Python 3 under Windows - see
+    function definition of _py3_windowsconsoleio_workaround().
     """
+    _py3_windowsconsoleio_workaround()
     with os.fdopen(os.dup(1), 'wb', 0) as tmp_stdout:
         with os.fdopen(os.dup(2), 'wb', 0) as tmp_stderr:
             with open(os.devnull, 'wb') as to_file:
@@ -421,6 +368,7 @@ def SuppressOutput():  # noqa
                     os.dup2(tmp_stdout.fileno(), 1)
                     os.dup2(tmp_stderr.fileno(), 2)
     # reset to original stdout/stderr
+    sys.stdin = sys.__stdin__
     sys.stdout = sys.__stdout__
     sys.stderr = sys.__stderr__
 
@@ -439,10 +387,16 @@ def TemporaryWorkingDirectory():  # noqa --> this name is IMHO ok for a CM
     old_dir = os.getcwd()
     os.chdir(tempdir)
     try:
-        yield
+        yield tempdir
     finally:
         os.chdir(old_dir)
-        shutil.rmtree(tempdir)
+        try:
+            shutil.rmtree(tempdir)
+        # Windows on appveyor is having issues with removing these temporary
+        # directories (e.g. https://ci.appveyor.com/project/obspy/obspy/builds
+        # /20718605/job/0vuja1b95rv5a0s2).
+        except Exception as e:
+            warnings.warn(e.__repr__())
 
 
 def factorize_int(x):
@@ -538,12 +492,17 @@ class MatplotlibBackend(object):
         successfully. If ``False``, additionally tries to use
         :func:`matplotlib.use` first and also shows a warning if the backend
         was not switched successfully.
+    :type close: bool
+    :param close: Whether to close all matplotlib figures when exiting the
+        context manager.
     """
-    def __init__(self, backend, sloppy=True):
+
+    def __init__(self, backend, sloppy=True, close=False):
         self.temporary_backend = backend
         self.sloppy = sloppy
         import matplotlib
         self.previous_backend = matplotlib.get_backend()
+        self.close = close
 
     def __enter__(self):
         if self.temporary_backend is None:
@@ -551,6 +510,9 @@ class MatplotlibBackend(object):
         self.switch_backend(backend=self.temporary_backend, sloppy=self.sloppy)
 
     def __exit__(self, exc_type, exc_val, exc_tb):  # @UnusedVariable
+        if self.close:
+            import matplotlib.pyplot as plt
+            plt.close('all')
         if self.temporary_backend is None:
             return
         self.switch_backend(backend=self.previous_backend, sloppy=self.sloppy)
@@ -570,9 +532,13 @@ class MatplotlibBackend(object):
             shows a warning if the backend was not switched successfully.
         """
         import matplotlib
+        # first of all, all figures should be closed, matplotlib is showing a
+        # warning that this will not be done automatically by matplotlib in
+        # newer releases anymore, so do it here
+        import matplotlib.pyplot as plt
+        plt.close("all")
         # sloppy. only do a `plt.switch_backend(..)`
         if sloppy:
-            import matplotlib.pyplot as plt
             plt.switch_backend(backend)
         else:
             # check if `matplotlib.use(..)` is emitting a warning
@@ -582,7 +548,6 @@ class MatplotlibBackend(object):
                     matplotlib.use(backend)
             # if that's the case, follow up with `plt.switch_backend(..)`
             except UserWarning:
-                import matplotlib.pyplot as plt
                 plt.switch_backend(backend)
             # finally check if the switch was successful,
             # show a warning if not
@@ -637,6 +602,124 @@ def buffered_load_entry_point(dist, group, name):
     if hash_str not in _ENTRY_POINT_CACHE:
         _ENTRY_POINT_CACHE[hash_str] = load_entry_point(dist, group, name)
     return _ENTRY_POINT_CACHE[hash_str]
+
+
+def _yield_obj_parent_attr(obj, cls=None, is_attr=None, has_attr=None):
+    """
+    Recurse an object, yield a tuple of object, parent, attr.
+
+    Can be used, for example, to yield all ResourceIdentifier instances
+    contained in any obspy.core.event class instances and attached instances,
+    as well as the objects they are attached to (parents) and the attribute
+    name in which they are stored (attr).
+
+    :param obj:
+        The object to recurse through attributes of lists, tuples, and other
+        instances.
+    :param cls:
+        Only return instances of cls if not None, else return all instances.
+    :param is_attr:
+        Only return objects stored as attr_name, if None return all.
+    :param has_attr:
+        Only return objects that have attribute has_attr, if None return all.
+
+    .. rubric:: General Usage
+
+    Get a list of all resource_ids contained in an event, the objects they
+    are attached to, and the attribute name on the parent object.
+
+    >>> import obspy
+    >>> from obspy.core.event import ResourceIdentifier
+    >>> cat = obspy.read_events()
+    >>> resource_tuple = list(_yield_obj_parent_attr(cat, ResourceIdentifier))
+    """
+    ids = set()  # id cache to avoid circular references
+
+    def func(obj, attr=None, parent=None):
+        id_tuple = (id(obj), id(parent))
+
+        # If object/parent combo have not been yielded continue.
+        if id_tuple not in ids:
+            ids.add(id_tuple)
+            # Check if this object is stored as the desired attribute.
+            is_attribute = is_attr is None or attr == is_attr
+            # Check if the object has the desired attribute.
+            has_attribute = has_attr is None or hasattr(obj, has_attr)
+            # Check if isinstance of desired class.
+            is_instance = cls is None or isinstance(obj, cls)
+            # Yield object, parent, and attr if desired conditions are met.
+            if is_attribute and has_attribute and is_instance:
+                yield (obj, parent, attr)
+            # Iterate through basic built-in types.
+            if isinstance(obj, (list, tuple)):
+                for val in obj:
+                    for out in func(val, attr=attr, parent=obj):
+                        yield out
+            elif isinstance(obj, dict):
+                for item, val in obj.items():
+                    for out in func(val, attr=item, parent=obj):
+                        yield out
+            # Iterate through non built-in object attributes.
+            elif hasattr(obj, '__slots__'):
+                for attr in obj.__slots__:
+                    val = getattr(obj, attr)
+                    for out in func(val, attr=attr, parent=obj):
+                        yield out
+            elif hasattr(obj, '__dict__'):
+                for item, val in obj.__dict__.items():
+                    for out in func(val, attr=item, parent=obj):
+                        yield out
+
+    return func(obj)
+
+
+def _yield_resource_id_parent_attr(obj):
+    """
+    Specialized form of _yield_obj_parent_attr for getting ResourceIdentifiers.
+
+    This function makes some assumptions because only resource_identifiers are
+    being sought in order to improve efficiency.
+    """
+    from obspy.core.event import ResourceIdentifier
+
+    ids = set()  # id cache to avoid circular references
+
+    def func(obj, parent=None, attr=None):
+        if obj is None or not (hasattr(obj, '__dict__') or
+                               isinstance(obj, (list, tuple))):
+            return  # stop iteration
+        id_tuple = (id(obj), id(parent))
+        if id_tuple not in ids:
+            ids.add(id_tuple)
+            # Yield object, parent, and attr if desired conditions are met
+            if isinstance(obj, ResourceIdentifier):
+                yield (obj, parent, attr)
+            # Iterate through basic built-in types.
+            elif isinstance(obj, (list, tuple)):
+                for val in obj:
+                    for out in func(val, obj, attr):
+                        yield out
+            # Iterate through non built-in object attributes.
+            elif hasattr(obj, '__dict__'):
+                for item, val in obj.__dict__.items():
+                    for out in func(val, obj, item):
+                        yield out
+
+    return func(obj)
+
+
+def ptp(a, *args, **kwargs):
+    """
+    Replacement for :meth:`numpy.ndarray.ptp()` and the corresponding method on
+    `MaskedArray` objects which are being removed in numpy 2.0
+    Basically just makes sure we call the correct replacement function numpy
+    put in place for regular and masked arrays.
+
+    :type a: :class:`numpy.ndarray` or :class:`numpy.ma.MaskedArray`
+    """
+    if isinstance(a, np.ma.MaskedArray):
+        return np.ma.ptp(a, *args, **kwargs)
+    return np.ptp(a, *args, **kwargs)
 
 
 if __name__ == '__main__':

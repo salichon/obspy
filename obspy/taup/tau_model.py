@@ -1,15 +1,9 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 Internal TauModel class.
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-from future.utils import native_str
-
 from collections import OrderedDict
-import os
+from pathlib import Path
 from copy import deepcopy
 from itertools import count
 from math import pi
@@ -160,26 +154,37 @@ class TauModel(object):
         best_moho = 1e300
         best_cmb = 1e300
         best_iocb = 1e300
-        for branch_num, tBranch in enumerate(self.tau_branches[0]):
-            if abs(tBranch.top_depth - self.s_mod.v_mod.moho_depth) <= \
+        for branch_num, t_branch in enumerate(self.tau_branches[0]):
+            if abs(t_branch.top_depth - self.s_mod.v_mod.moho_depth) <= \
                     best_moho:
                 # Branch with Moho at its top.
                 self.moho_branch = branch_num
-                best_moho = abs(tBranch.top_depth -
+                best_moho = abs(t_branch.top_depth -
                                 self.s_mod.v_mod.moho_depth)
-            if abs(tBranch.top_depth - self.s_mod.v_mod.cmb_depth) < best_cmb:
+            if abs(t_branch.top_depth - self.s_mod.v_mod.cmb_depth) < best_cmb:
                 self.cmb_branch = branch_num
-                best_cmb = abs(tBranch.top_depth - self.s_mod.v_mod.cmb_depth)
-            if abs(tBranch.top_depth - self.s_mod.v_mod.iocb_depth) < \
+                best_cmb = abs(t_branch.top_depth - self.s_mod.v_mod.cmb_depth)
+            if abs(t_branch.top_depth - self.s_mod.v_mod.iocb_depth) < \
                     best_iocb:
                 self.iocb_branch = branch_num
-                best_iocb = abs(tBranch.top_depth -
+                best_iocb = abs(t_branch.top_depth -
                                 self.s_mod.v_mod.iocb_depth)
+        # check bottom of last layer, zero radius, in case no core for
+        # cmb and iocb
+        t_branch = self.tau_branches[0, -1]
+        if abs(t_branch.bot_depth - self.s_mod.v_mod.cmb_depth) < best_cmb:
+            self.cmb_branch = len(self.tau_branches[0])
+            self.cmb_depth = t_branch.bot_depth
+        if abs(t_branch.bot_depth - self.s_mod.v_mod.iocb_depth) < best_iocb:
+            self.iocb_branch = len(self.tau_branches[0])
+            self.iocb_depth = t_branch.bot_depth
         # Now set moho_depth etc. to the top of the branches we have decided
         # on.
         self.moho_depth = self.tau_branches[0, self.moho_branch].top_depth
-        self.cmb_depth = self.tau_branches[0, self.cmb_branch].top_depth
-        self.iocb_depth = self.tau_branches[0, self.iocb_branch].top_depth
+        if (self.cmb_branch < len(self.tau_branches[0])):
+            self.cmb_depth = self.tau_branches[0, self.cmb_branch].top_depth
+        if (self.iocb_branch < len(self.tau_branches[0])):
+            self.iocb_depth = self.tau_branches[0, self.iocb_branch].top_depth
         self.validate()
 
     def __str__(self):
@@ -307,35 +312,35 @@ class TauModel(object):
                                               index_p)
                 new_tau_branches[1, i].insert(p_wave_ray_param, out_s_mod,
                                               index_p)
-        for pOrS in range(2):
-            new_tau_branches[pOrS, branch_to_split] = TauBranch(
-                self.tau_branches[pOrS, branch_to_split].top_depth, depth,
-                pOrS == 0)
-            new_tau_branches[pOrS, branch_to_split].create_branch(
+        for p_or_s in range(2):
+            new_tau_branches[p_or_s, branch_to_split] = TauBranch(
+                self.tau_branches[p_or_s, branch_to_split].top_depth, depth,
+                p_or_s == 0)
+            new_tau_branches[p_or_s, branch_to_split].create_branch(
                 out_s_mod,
-                self.tau_branches[pOrS, branch_to_split].max_ray_param,
+                self.tau_branches[p_or_s, branch_to_split].max_ray_param,
                 out_ray_params)
-            new_tau_branches[pOrS, branch_to_split + 1] = \
-                self.tau_branches[pOrS, branch_to_split].difference(
-                    new_tau_branches[pOrS, branch_to_split],
+            new_tau_branches[p_or_s, branch_to_split + 1] = \
+                self.tau_branches[p_or_s, branch_to_split].difference(
+                    new_tau_branches[p_or_s, branch_to_split],
                     index_p, index_s, out_s_mod,
-                    new_tau_branches[pOrS, branch_to_split].min_ray_param,
+                    new_tau_branches[p_or_s, branch_to_split].min_ray_param,
                     out_ray_params)
         for i in range(branch_to_split + 1, len(self.tau_branches[0])):
-            for pOrS in range(2):
-                new_tau_branches[pOrS, i + 1] =  \
-                    deepcopy(self.tau_branches[pOrS, i])
+            for p_or_s in range(2):
+                new_tau_branches[p_or_s, i + 1] =  \
+                    deepcopy(self.tau_branches[p_or_s, i])
             if index_s != -1:
                 # Add the new ray parameter from splitting the S wave
                 # slownes layer to both the P and S wave tau branches.
-                for pOrS in range(2):
-                    new_tau_branches[pOrS, i + 1].insert(
+                for p_or_s in range(2):
+                    new_tau_branches[p_or_s, i + 1].insert(
                         s_wave_ray_param, out_s_mod, index_s)
             if index_p != -1:
                 # Add the new ray parameter from splitting the P wave
                 # slownes layer to both the P and S wave tau branches.
-                for pOrS in range(2):
-                    new_tau_branches[pOrS, i + 1].insert(
+                for p_or_s in range(2):
+                    new_tau_branches[p_or_s, i + 1].insert(
                         p_wave_ray_param, out_s_mod, index_p)
         # We have split a branch so possibly source_branch, moho_branch,
         # cmb_branch and iocb_branch are off by 1.
@@ -490,17 +495,17 @@ class TauModel(object):
                 arrays[key] = self.tau_branches[i_][j_]._to_array()
 
         # c) handle simple contents of .s_mod
-        dtypes = [(native_str('debug'), np.bool_),
-                  (native_str('p_wave'), np.bool_),
-                  (native_str('s_wave'), np.bool_),
-                  (native_str('allow_inner_core_s'), np.bool_),
-                  (native_str('max_delta_p'), np.float_),
-                  (native_str('max_depth_interval'), np.float_),
-                  (native_str('max_interp_error'), np.float_),
-                  (native_str('max_range_interval'), np.float_),
-                  (native_str('min_delta_p'), np.float_),
-                  (native_str('radius_of_planet'), np.float_),
-                  (native_str('slowness_tolerance'), np.float_)]
+        dtypes = [('debug', np.bool_),
+                  ('p_wave', np.bool_),
+                  ('s_wave', np.bool_),
+                  ('allow_inner_core_s', np.bool_),
+                  ('max_delta_p', np.float64),
+                  ('max_depth_interval', np.float64),
+                  ('max_interp_error', np.float64),
+                  ('max_range_interval', np.float64),
+                  ('min_delta_p', np.float64),
+                  ('radius_of_planet', np.float64),
+                  ('slowness_tolerance', np.float64)]
         slowness_model = np.empty(shape=(), dtype=dtypes)
         for dtype in dtypes:
             key = dtype[0]
@@ -521,15 +526,15 @@ class TauModel(object):
             arrays['s_mod.' + key] = arr_
 
         # e) handle .s_mod.v_mod
-        dtypes = [(native_str('cmb_depth'), np.float_),
-                  (native_str('iocb_depth'), np.float_),
-                  (native_str('is_spherical'), np.bool_),
-                  (native_str('max_radius'), np.float_),
-                  (native_str('min_radius'), np.int_),
-                  (native_str('model_name'), np.str_,
+        dtypes = [('cmb_depth', np.float64),
+                  ('iocb_depth', np.float64),
+                  ('is_spherical', np.bool_),
+                  ('max_radius', np.float64),
+                  ('min_radius', np.int_),
+                  ('model_name', np.str_,
                    len(self.s_mod.v_mod.model_name)),
-                  (native_str('moho_depth'), np.float_),
-                  (native_str('radius_of_planet'), np.float_)]
+                  ('moho_depth', np.float64),
+                  ('radius_of_planet', np.float64)]
         velocity_model = np.empty(shape=(), dtype=dtypes)
         for dtype in dtypes:
             key = dtype[0]
@@ -545,9 +550,7 @@ class TauModel(object):
         """
         Deserialize model from numpy npz binary file.
         """
-        # XXX: Make this a with statement when old NumPy support is dropped.
-        npz = np.load(filename)
-        try:
+        with np.load(filename) as npz:
             model = TauModel(s_mod=None,
                              radius_of_planet=float(npz["radius_of_planet"]),
                              cache=cache, skip_calc=True)
@@ -611,7 +614,7 @@ class TauModel(object):
 
             # e) handle .s_mod.v_mod
             velocity_model = VelocityModel(
-                model_name=native_str(npz["v_mod"]["model_name"]),
+                model_name=npz["v_mod"]["model_name"],
                 radius_of_planet=float(npz["v_mod"]["radius_of_planet"]),
                 min_radius=float(npz["v_mod"]["min_radius"]),
                 max_radius=float(npz["v_mod"]["max_radius"]),
@@ -623,18 +626,14 @@ class TauModel(object):
             )
             setattr(slowness_model, "v_mod", velocity_model)
             setattr(velocity_model, 'layers', npz['v_mod.layers'])
-        finally:
-            if hasattr(npz, 'close'):
-                npz.close()
-            else:
-                del npz
         return model
 
     @staticmethod
     def from_file(model_name, cache=None):
-        if os.path.exists(model_name):
-            filename = model_name
+        model_path = Path(model_name)
+        if model_path.exists():
+            filepath = model_path
         else:
-            filename = os.path.join(os.path.dirname(__file__), "data",
-                                    model_name.lower() + ".npz")
-        return TauModel.deserialize(filename, cache=cache)
+            filepath = Path(__file__).parent / "data"
+            filepath = filepath / (model_name.lower()+".npz")
+        return TauModel.deserialize(filepath, cache=cache)

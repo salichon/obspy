@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 Utility functions required for the download helpers.
@@ -9,24 +8,17 @@ Utility functions required for the download helpers.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 import collections
 import fnmatch
 import itertools
 import os
-import sys
-from lxml import etree
-import numpy as np
-from scipy.spatial import cKDTree
+from http.client import HTTPException
 from socket import timeout as socket_timeout
+from urllib.error import HTTPError, URLError
 
-if sys.version_info.major == 2:
-    from urllib2 import HTTPError, URLError
-else:
-    from urllib.error import HTTPError, URLError
+import numpy as np
+from lxml import etree
+from scipy.spatial import cKDTree
 
 import obspy
 from obspy.core.util.base import NamedTemporaryFile
@@ -36,8 +28,8 @@ from obspy.io.mseed.util import get_record_information
 
 # Different types of errors that can happen when downloading data via the
 # FDSN clients.
-ERRORS = (FDSNException, HTTPError, URLError, socket_timeout)
-
+ERRORS = (ConnectionError, FDSNException, HTTPError, HTTPException, URLError,
+          socket_timeout, )
 
 # mean earth radius in meter as defined by the International Union of
 # Geodesy and Geophysics. Used for the spherical kd-tree.
@@ -102,12 +94,17 @@ def download_and_split_mseed_bulk(client, client_name, chunks, logger):
     # intervals, each of which will end up in a separate file.
     filenames = collections.defaultdict(list)
     for chunk in chunks:
-        filenames[tuple(chunk[:4])].append({
+        candidate = {
             "starttime": chunk[4],
             "endtime": chunk[5],
             "filename": chunk[6],
             "current_latest_endtime": None,
-            "sequence_number": None})
+            "sequence_number": None}
+        # Should not be necessary if chunks have been deduplicated before but
+        # better safe than sorry.
+        if candidate in filenames[tuple(chunk[:4])]:
+            continue
+        filenames[tuple(chunk[:4])].append(candidate)
 
     sequence_number = [0]
 
@@ -171,7 +168,9 @@ def download_and_split_mseed_bulk(client, client_name, chunks, logger):
                 else:
                     candidates = [second]
         elif len(candidates) >= 2:
-            raise NotImplementedError
+            raise NotImplementedError(
+                "Please contact the developers. candidates: %s" %
+                str(candidates))
 
         # Finally found the correct chunk
         ret_val = candidates[0]
@@ -285,7 +284,7 @@ class SphericalNearestNeighbour(object):
     @staticmethod
     def spherical2cartesian(data):
         """
-        Converts a list of :class:`~obspy.fdsn.download_status.Station`
+        Converts a list of :class:`~obspy.clients.fdsn.download_status.Station`
         objects to an array of shape(len(list), 3) containing x/y/z in meters.
         """
         # Create three arrays containing lat/lng/radius.
@@ -441,14 +440,14 @@ def get_stationxml_filename(str_or_fct, network, station, channels,
     Helper function getting the filename of a StationXML file.
 
     :param str_or_fct: The string or function to be evaluated.
-    :type str_or_fct: function or str
+    :type str_or_fct: callable or str
     :param network: The network code.
     :type network: str
     :param station: The station code.
     :type station: str
     :param channels: The channels. Each channel is a tuple of two strings:
         location code and channel code.
-    :type channels: list of tuples
+    :type channels: list[tuple]
     :param starttime: The start time.
     :type starttime: :class:`~obspy.core.utcdatetime.UTCDateTime`
     :param endtime: The end time.
@@ -481,7 +480,7 @@ def get_stationxml_filename(str_or_fct, network, station, channels,
     if isinstance(path, (str, bytes)):
         return path
 
-    elif isinstance(path, collections.Container):
+    elif isinstance(path, collections.abc.Container):
         if "available_channels" not in path or \
                 "missing_channels" not in path or \
                 "filename" not in path:
@@ -489,9 +488,10 @@ def get_stationxml_filename(str_or_fct, network, station, channels,
                 "The dictionary returned by the stationxml filename function "
                 "must contain the following keys: 'available_channels', "
                 "'missing_channels', and 'filename'.")
-        if not isinstance(path["available_channels"], collections.Iterable) or\
+        if not isinstance(path["available_channels"],
+                          collections.abc.Iterable) or\
                 not isinstance(path["missing_channels"],
-                               collections.Iterable) or \
+                               collections.abc.Iterable) or \
                 not isinstance(path["filename"], (str, bytes)):
             raise ValueError("Return types must be two lists of channels and "
                              "a string for the filename.")
@@ -546,8 +546,3 @@ def get_mseed_filename(str_or_fct, network, station, location, channel,
     elif not isinstance(path, (str, bytes)):
         raise TypeError("'%s' is not a filepath." % str(path))
     return path
-
-
-if __name__ == '__main__':
-    import doctest
-    doctest.testmod(exclude_empty=True)

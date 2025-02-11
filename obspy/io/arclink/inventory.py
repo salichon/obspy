@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 ObsPy implementation for parsing the arclink inventory format
@@ -12,15 +11,11 @@ This is a modified version of obspy.io.stationxml and obspy.io.sc3ml.
     The ObsPy Development Team (devs@obspy.org)
 :license:
     GNU Lesser General Public License, Version 3
-    (http://www.gnu.org/copyleft/lesser.html)
+    (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 import inspect
 import math
-import os
+from pathlib import Path
 import re
 import warnings
 
@@ -68,11 +63,11 @@ def _is_inventory_xml(path_or_file_object):
                 return False
         root = xmldoc.getroot()
         if re.match(r'{http://geofon.gfz-potsdam.de/ns/Inventory/'
-                    '[0-9]*\.?[0-9]+/}', root.tag) is None:
+                    r'[0-9]*\.?[0-9]+/}', root.tag) is None:
             return False
         # Match and convert schema number to a float to have positive
         # comparisons between, e.g "1" and "1.0".
-        version = float(re.findall("\d+\.\d+", root.tag)[0])
+        version = float(re.findall(r"\d+\.\d+", root.tag)[0])
         if float(version != float(SCHEMA_VERSION)):
             warnings.warn("The inventory file has version %s, ObsPy can "
                           "deal with version %s. Proceed with caution." % (
@@ -98,9 +93,8 @@ def validate_arclink_xml(path_or_object):
         element.
     """
     # Get the schema location.
-    schema_location = os.path.dirname(inspect.getfile(inspect.currentframe()))
-    schema_location = os.path.join(schema_location, "data",
-                                   "arclink_schema.xsd")
+    schema_location = Path(inspect.getfile(inspect.currentframe())).parent
+    schema_location = str(schema_location / "data" / "arclink_schema.xsd")
 
     xmlschema = etree.XMLSchema(etree.parse(schema_location))
 
@@ -129,7 +123,7 @@ def _ns(tagname):
     return "{%s}%s" % (SCHEMA_NAMESPACE, tagname)
 
 
-def _read_inventory_xml(path_or_file_object):
+def _read_inventory_xml(path_or_file_object, **kwargs):
     """
     Function for reading an Arclink inventory file.
 
@@ -379,7 +373,8 @@ def _read_channel(inventory_root, cha_element):
     if sensor_element is not None:
         response_id = sensor_element.get("response")
         if response_id is not None:
-            resp_type = response_id.split("#")[0]
+            # Fix #2552
+            resp_type = response_id.replace("#", "/").split("/")[0]
             if resp_type == 'ResponsePAZ':
                 search = "responsePAZ[@publicID='" + response_id + "']"
                 response_element = inventory_root.find(_ns(search))
@@ -409,7 +404,7 @@ def _read_channel(inventory_root, cha_element):
     numerator = _attr2obj(cha_element, "sampleRateNumerator", int)
     denominator = _attr2obj(cha_element, "sampleRateDenominator", int)
 
-    rate = numerator/denominator
+    rate = numerator / denominator
 
     channel.sample_rate_ratio_number_samples = numerator
     channel.sample_rate_ratio_number_seconds = denominator
@@ -423,7 +418,7 @@ def _read_channel(inventory_root, cha_element):
                          ClockDrift)
         if channel.sample_rate != 0.0:
             channel.clock_drift_in_seconds_per_sample = \
-                _read_float_var(temp/channel.sample_rate, ClockDrift)
+                _read_float_var(temp / channel.sample_rate, ClockDrift)
         else:
             msg = "Clock drift division by sample rate of 0: using sec/sample"
             warnings.warn(msg)
@@ -431,7 +426,11 @@ def _read_channel(inventory_root, cha_element):
 
     channel.azimuth = _attr2obj(cha_element, "azimuth", Azimuth)
     channel.dip = _attr2obj(cha_element, "dip", Dip)
-    channel.storage_format = _attr2obj(cha_element, "format", str)
+    # storage format of channel not supported by StationXML1.1 anymore, keep it
+    # as a foreign tag to be nice if anybody needs to access it
+    channel.extra = {'format': {
+        'value': _tag2obj(cha_element, _ns("format"), str),
+        'namespace': SCHEMA_NAMESPACE}}
 
     if channel.sample_rate == 0.0:
         msg = "Something went hopelessly wrong, found sampling-rate of 0!"
@@ -624,7 +623,7 @@ def _read_response_stage(stage, rate, stage_number, input_units,
     :param rate: stage sample rate
     :param stage_number: response stage number
     :param input_units: input units of stage
-    :param output_units output units of stage
+    :param output_units: output units of stage
     """
     elem_type = stage.tag.split("}")[1]
 
@@ -772,7 +771,7 @@ def _read_response_stage(stage, rate, stage_number, input_units,
             numerator=numerator, denominator=denominator, **kwargs)
 
     elif elem_type == 'responsePolynomial':
-        raise NotImplementedError("responsePolynomial not"
+        raise NotImplementedError("responsePolynomial not "
                                   "implemented. Contact the ObsPy developers")
         # Polynomial response (UNTESTED)
         # Currently not implemented in ObsPy (20-11-2015)

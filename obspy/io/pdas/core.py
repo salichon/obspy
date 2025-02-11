@@ -8,13 +8,10 @@ PDAS bindings to ObsPy core module.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA @UnusedWildImport
-
 import numpy as np
 
 from obspy.core import Stream, Trace, UTCDateTime
+from obspy.core.compatibility import from_buffer
 
 
 def _is_pdas(filename):
@@ -83,9 +80,9 @@ def _read_pdas(filename, **kwargs):
     sampling_rate = 1.0 / float(items[6][1].decode())
     dtype = items[1][1].decode()
     if dtype.upper() == "LONG":
-        data = np.fromstring(data, dtype=np.int16)
+        data = from_buffer(data, dtype=np.int16)
     elif dtype.upper() == "SHORT":
-        data = np.fromstring(data, dtype=np.int8)
+        data = from_buffer(data, dtype=np.int8)
     else:
         raise NotImplementedError()
 

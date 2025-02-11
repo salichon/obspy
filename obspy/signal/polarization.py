@@ -8,10 +8,6 @@ Functions for polarization analysis.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 import math
 import warnings
 
@@ -37,7 +33,7 @@ def eigval(datax, datay, dataz, fk, normf=1.0):
 
     The algorithm is mainly based on the paper by [Jurkevics1988]_. The rest is
     just the numerical differentiation by central differences (carried out by
-    the routine :func:`scipy.signal.lfilter(data, 1, fk)`).
+    the routine :func:`scipy.signal.lfilter` (data, 1, fk)).
 
     :param datax: Data of x component. Note this is most useful with
         windowed data, represented by a 2 dimensional array. First
@@ -131,7 +127,7 @@ def flinn(stream, noise_thres=0):
     eigenstructure decomposition method of [Flinn1965b]_.
 
     :param stream: ZNE sorted trace data
-    :type stream: List of ZNE sorted numpy arrays
+    :type stream: list
     :param noise_tresh: Variance of the noise sphere; data points are excluded
         when falling within the sphere of radius sqrt(noise_thres),
         default is set to 0.
@@ -192,7 +188,8 @@ def instantaneous_frequency(data, sampling_rate):
     return instf
 
 
-def vidale_adapt(stream, noise_thres, fs, flow, fhigh, spoint, stime, etime):
+def vidale_adapt(stream, noise_thres, fs, flow, fhigh, spoint, stime, etime,
+                 adaptive=True):
     """
     Adaptive window polarization analysis after [Vidale1986]_ with the
     modification of adapted analysis window estimated by estimating the
@@ -217,6 +214,10 @@ def vidale_adapt(stream, noise_thres, fs, flow, fhigh, spoint, stime, etime):
     :type stime: :class:`~obspy.core.utcdatetime.UTCDateTime`
     :param etime: end time for the analysis
     :type etime: :class:`~obspy.core.utcdatetime.UTCDateTime`
+    :param adaptive: switch for adaptive window estimation (defaults to
+        ``True``). If set to ``False``, the window will be estimated as
+        ``3 * max(1/(fhigh-flow), 1/flow)``.
+    :type adaptive: bool
     :returns: list of tuples containing azimuth, incidence, rectilinearity,
         planarity, and ellipticity
     """
@@ -238,15 +239,18 @@ def vidale_adapt(stream, noise_thres, fs, flow, fhigh, spoint, stime, etime):
     offset = int(3 * fs / flow)
     covmat = np.zeros([3, 3], dtype=np.complex128)
     while True:
-        adapt = int(3. * w * fs / (zi[offset] + ni[offset] + ei[offset]))
-        # in order to account for errors in the inst freq estimation
-        if adapt > int(3 * fs / flow):
-            adapt = int(3 * fs / flow)
-        if adapt < int(3 * fs / fhigh):
-            adapt = int(3 * fs / fhigh)
-        # XXX: was adapt /= 2
-        adapt //= 2
-        adapt = (2 * adapt) + 1
+        if adaptive:
+            adapt = int(3.0 * w * fs / (zi[offset] + ni[offset] + ei[offset]))
+            # in order to account for errors in the inst freq estimation
+            if adapt > int(3.0 * fs / flow):
+                adapt = int(3.0 * fs / flow)
+            elif adapt < int(3.0 * fs / fhigh):
+                adapt = int(3.0 * fs / fhigh)
+            # XXX: was adapt /= 2
+            adapt //= 2
+            adapt = (2 * adapt) + 1
+        else:
+            adapt = max(int(3. * fs / (fhigh - flow)), int(3. * fs / flow))
         newstart = stime + offset / fs
         if (newstart + (adapt / 2) / fs) > etime:
             break
@@ -261,16 +265,17 @@ def vidale_adapt(stream, noise_thres, fs, flow, fhigh, spoint, stime, etime):
         nx -= nx.mean()
         ex -= ex.mean()
 
-        covmat[0][0] = np.dot(ex, ex.conjugate())
-        covmat[0][1] = np.dot(ex, nx.conjugate())
-        covmat[1][0] = covmat[0][1].conjugate()
-        covmat[0][2] = np.dot(ex, zx.conjugate())
-        covmat[2][0] = covmat[0][2].conjugate()
-        covmat[1][1] = np.dot(nx, nx.conjugate())
-        covmat[1][2] = np.dot(zx, nx.conjugate())
-        covmat[2][1] = covmat[1][2].conjugate()
-        covmat[2][2] = np.dot(zx, zx.conjugate())
+        mask = (stream[0][:] ** 2 + stream[1][:] ** 2 + stream[2][:] ** 2) > \
+            noise_thres
+        xx = np.zeros((3, mask.sum()), dtype=np.complex128)
+        # East
+        xx[0, :] = ea
+        # North
+        xx[1, :] = na
+        # Z
+        xx[2, :] = za
 
+        covmat = np.cov(xx)
         eigvec, eigenval, v = np.linalg.svd(covmat)
 
         # very similar to function flinn, possible could be unified
@@ -305,7 +310,6 @@ def vidale_adapt(stream, noise_thres, fs, flow, fhigh, spoint, stime, etime):
                 azimuth += 180.0
         if azimuth > 180.0:
             azimuth -= 180.0
-
         res.append((newstart.timestamp, azimuth, incidence, rect, plan, ellip))
         offset += 1
 
@@ -433,7 +437,8 @@ def _get_s_point(stream, stime, etime):
 
 
 def polarization_analysis(stream, win_len, win_frac, frqlow, frqhigh, stime,
-                          etime, verbose=False, method="pm", var_noise=0.0):
+                          etime, verbose=False, method="pm", var_noise=0.0,
+                          adaptive=True):
     """
     Method carrying out polarization analysis with the [Flinn1965b]_,
     [Jurkevics1988]_, ParticleMotion, or [Vidale1986]_ algorithm.
@@ -447,9 +452,9 @@ def polarization_analysis(stream, win_len, win_frac, frqlow, frqhigh, stime,
     :param var_noise: resembles a sphere of noise in PM where the 3C is
         excluded
     :type var_noise: float
-    :param frqlow: lower frequency for PM
+    :param frqlow: lower frequency. Only used for ``method='vidale'``.
     :type frqlow: float
-    :param frqhigh: higher frequency for PM
+    :param frqhigh: higher frequency. Only used for ``method='vidale'``.
     :type frqhigh: float
     :param stime: Start time of interest
     :type stime: :class:`obspy.core.utcdatetime.UTCDateTime`
@@ -458,6 +463,10 @@ def polarization_analysis(stream, win_len, win_frac, frqlow, frqhigh, stime,
     :param method: the method to use. one of ``"pm"``, ``"flinn"`` or
         ``"vidale"``.
     :type method: str
+    :param adaptive: switch for adaptive window estimation (defaults to
+        ``True``). If set to ``False``, the window will be estimated as
+        ``3 * max(1/(fhigh-flow), 1/flow)``.
+    :type adaptive: bool
     :rtype: dict
     :returns: Dictionary with keys ``"timestamp"`` (POSIX timestamp, can be
         used to initialize :class:`~obspy.core.utcdatetime.UTCDateTime`
@@ -474,6 +483,14 @@ def polarization_analysis(stream, win_len, win_frac, frqlow, frqhigh, stime,
         raise ValueError(msg)
 
     res = []
+
+    if stream.get_gaps():
+        msg = 'Input stream must not include gaps:\n' + str(stream)
+        raise ValueError(msg)
+
+    if len(stream) != 3:
+        msg = 'Input stream expected to be three components:\n' + str(stream)
+        raise ValueError(msg)
 
     # check that sampling rates do not vary
     fs = stream[0].stats.sampling_rate
@@ -497,25 +514,23 @@ def polarization_analysis(stream, win_len, win_frac, frqlow, frqhigh, stime,
         tap = cosine_taper(nsamp, p=0.22)
         offset = 0
         while (newstart + (nsamp + nstep) / fs) < etime:
+            timestamp = newstart.timestamp + (float(nsamp) / 2 / fs)
             try:
-                data = []
-                z = []
-                n = []
-                e = []
                 for i, tr in enumerate(stream):
                     dat = tr.data[spoint[i] + offset:
                                   spoint[i] + offset + nsamp]
                     dat = (dat - dat.mean()) * tap
-                    if "Z" in tr.stats.channel:
+                    if tr.stats.channel[-1].upper() == "Z":
                         z = dat.copy()
-                    if "N" in tr.stats.channel:
+                    elif tr.stats.channel[-1].upper() == "N":
                         n = dat.copy()
-                    if "E" in tr.stats.channel:
+                    elif tr.stats.channel[-1].upper() == "E":
                         e = dat.copy()
+                    else:
+                        msg = "Unexpected channel code '%s'" % tr.stats.channel
+                        raise ValueError(msg)
 
-                data.append(z)
-                data.append(n)
-                data.append(e)
+                data = [z, n, e]
             except IndexError:
                 break
 
@@ -523,15 +538,15 @@ def polarization_analysis(stream, win_len, win_frac, frqlow, frqhigh, stime,
             if method.lower() == "pm":
                 azimuth, incidence, error_az, error_inc = \
                     particle_motion_odr(data, var_noise)
-                res.append(np.array([newstart.timestamp + float(nstep) / fs,
-                           azimuth, incidence, error_az, error_inc]))
+                res.append(np.array([
+                    timestamp, azimuth, incidence, error_az, error_inc]))
             if method.lower() == "flinn":
                 azimuth, incidence, reclin, plan = flinn(data, var_noise)
-                res.append(np.array([newstart.timestamp + float(nstep) / fs,
-                                    azimuth, incidence, reclin, plan]))
+                res.append(np.array([
+                    timestamp, azimuth, incidence, reclin, plan]))
 
             if verbose:
-                print(newstart, newstart + nsamp / fs, res[-1][1:])
+                print(newstart, newstart + float(nsamp) / fs, res[-1][1:])
             offset += nstep
 
             newstart += float(nstep) / fs

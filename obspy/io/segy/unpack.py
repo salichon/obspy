@@ -11,18 +11,14 @@
 Functions that will all take a file pointer and the sample count and return a
 NumPy array with the unpacked values.
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-from future.utils import native_str
-
-import ctypes as C
-import os
+import ctypes as C  # NOQA
+from pathlib import Path
 import sys
 import warnings
 
 import numpy as np
 
+from obspy.core.compatibility import from_buffer
 from .util import clibsegy
 
 
@@ -36,7 +32,7 @@ else:
 
 clibsegy.ibm2ieee.argtypes = [
     np.ctypeslib.ndpointer(dtype=np.float32, ndim=1,
-                           flags=native_str('C_CONTIGUOUS')),
+                           flags='C_CONTIGUOUS'),
     C.c_int]
 clibsegy.ibm2ieee.restype = C.c_void_p
 
@@ -46,7 +42,7 @@ def unpack_4byte_ibm(file, count, endian='>'):
     Unpacks 4 byte IBM floating points.
     """
     # Read as 4 byte integer so bit shifting works.
-    data = np.fromstring(file.read(count * 4), dtype=np.float32)
+    data = from_buffer(file.read(count * 4), dtype=np.float32)
     # Swap the byte order if necessary.
     if BYTEORDER != endian:
         data = data.byteswap()
@@ -92,7 +88,7 @@ def unpack_4byte_integer(file, count, endian='>'):
     Unpacks 4 byte integers.
     """
     # Read as 4 byte integer so bit shifting works.
-    data = np.fromstring(file.read(count * 4), dtype=np.int32)
+    data = from_buffer(file.read(count * 4), dtype=np.int32)
     # Swap the byte order if necessary.
     if BYTEORDER != endian:
         data = data.byteswap()
@@ -104,7 +100,7 @@ def unpack_2byte_integer(file, count, endian='>'):
     Unpacks 2 byte integers.
     """
     # Read as 4 byte integer so bit shifting works.
-    data = np.fromstring(file.read(count * 2), dtype=np.int16)
+    data = from_buffer(file.read(count * 2), dtype=np.int16)
     # Swap the byte order if necessary.
     if BYTEORDER != endian:
         data = data.byteswap()
@@ -120,7 +116,7 @@ def unpack_4byte_ieee(file, count, endian='>'):
     Unpacks 4 byte IEEE floating points.
     """
     # Read as 4 byte integer so bit shifting works.
-    data = np.fromstring(file.read(count * 4), dtype=np.float32)
+    data = from_buffer(file.read(count * 4), dtype=np.float32)
     # Swap the byte order if necessary.
     if BYTEORDER != endian:
         data = data.byteswap()
@@ -146,10 +142,10 @@ class OnTheFlyDataUnpacker:
         self.seek = seek
         self.count = count
         self.endian = endian
-        self.mtime = os.path.getmtime(self.filename)
+        self.mtime = Path(self.filename).stat().st_mtime
 
     def __call__(self):
-        mtime = os.path.getmtime(self.filename)
+        mtime = Path(self.filename).stat().st_mtime
         if mtime != self.mtime:
             msg = "File '%s' changed since reading headers" % self.filename
             msg += "; data may be read incorrectly "

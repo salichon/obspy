@@ -8,17 +8,47 @@ Module containing a UTC-based datetime class.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA @UnusedWildImport
-from future.utils import native_str
-
 import datetime
+import calendar
 import math
+import operator
+import re
+import sys
 import time
+import warnings
 
+import numpy as np
+from obspy.core.util.deprecation_helpers import ObsPyDeprecationWarning
+
+
+# based on https://www.myintervals.com/blog/2009/05/20/iso-8601, w/ week 53 fix
+_ISO8601_REGEX = re.compile(r"""
+    ^
+    ([\+-]?\d{4}(?!\d{2}\b))
+    ((-?)
+     ((0[1-9]|1[0-2])
+      (\3([12]\d|0[1-9]|3[01]))?
+      |W([0-4]\d|5[0-3])(-?[1-7])?
+      |(00[1-9]|0[1-9]\d|[12]\d{2}|3([0-5]\d|6[0-6]))
+     )
+     ([T\s]
+      ((([01]\d|2[0-3])((:?)[0-5]\d)?|24\:?00)([\.,]\d+(?!:))?)?
+      (\17[0-5]\d([\.,]\d+)?)?
+      ([zZ]|([\+-])([01]\d|2[0-3]):?([0-5]\d)?)?
+     )?
+    )?
+    $
+    """, re.VERBOSE)
+# Regular expression used in the init function of the UTCDateTime objects which
+# is called a lot. Thus pre-compile it.
+_YEAR0REGEX = re.compile(r"^(\d{1,3}[-/,])(.*)$")
 
 TIMESTAMP0 = datetime.datetime(1970, 1, 1, 0, 0)
+
+# common attributes
+YMDHMS = ('year', 'month', 'day', 'hour', 'minute', 'second')
+YJHMS = ('year', 'julday', 'hour', 'minute', 'second')
+YMDHMS_FORMAT = "%04d-%02d-%02dT%02d:%02d:%02d"
 
 
 class UTCDateTime(object):
@@ -27,28 +57,34 @@ class UTCDateTime(object):
 
     This datetime class is based on the POSIX time, a system for describing
     instants in time, defined as the number of seconds elapsed since midnight
-    Coordinated Universal Time (UTC) of Thursday, January 1, 1970. Using a
-    single float timestamp allows higher precision as the default Python
-    :class:`datetime.datetime` class. It features the full `ISO8601:2004`_
-    specification and some additional string patterns during object
-    initialization.
+    Coordinated Universal Time (UTC) of Thursday, January 1, 1970. Internally,
+    the POSIX time is represented in nanoseconds as an integer, which allows
+    higher precision than the default Python :class:`datetime.datetime` class.
+    It features the full `ISO8601:2004`_ specification and some additional
+    string patterns during object initialization.
 
     :type args: int, float, str, :class:`datetime.datetime`, optional
     :param args: The creation of a new `UTCDateTime` object depends from the
         given input parameters. All possible options are summarized in the
         `Examples`_ section below.
-    :type iso8601: bool, optional
-    :param iso8601: Enforce `ISO8601:2004`_ detection. Works only with a string
-        as first input argument.
+    :type iso8601: bool or None, optional
+    :param iso8601: Enforce/disable `ISO8601:2004`_ mode. Defaults to ``None``
+        for auto detection. Works only with a string as first input argument.
+    :type strict: bool, optional
+    :param strict: If True, Conform to `ISO8601:2004`_ limits on positional
+        and keyword arguments. If False, allow hour, minute, second, and
+        microsecond values to exceed 23, 59, 59, and 1_000_000 respectively.
     :type precision: int, optional
     :param precision: Sets the precision used by the rich comparison operators.
         Defaults to ``6`` digits after the decimal point. See also `Precision`_
         section below.
 
-    .. versionchanged:: 0.5.1
-        UTCDateTime is no longer based on Python's datetime.datetime class
-        instead uses timestamp as a single floating point value which allows
-        higher precision.
+    .. versionchanged:: 1.1.0
+        UTCDateTime is no longer based on a single floating point value but
+        rather an integer representing nanoseconds elapsed since midnight
+        Coordinated Universal Time (UTC) of Thursday, January 1, 1970.
+        An integer internal representation allows higher precision and more
+        predictable behavior than a float representation.
 
     .. rubric:: Supported Operations
 
@@ -77,8 +113,9 @@ class UTCDateTime(object):
         >>> UTCDateTime(1240561632.5)
         UTCDateTime(2009, 4, 24, 8, 27, 12, 500000)
 
-    (2) Using a `ISO8601:2004`_ string. The detection may be enforced by
-        setting the ``iso8601`` parameter to True.
+    (2) Using a `ISO8601:2004`_ string. The detection may be enabled/disabled
+        using the``iso8601`` parameter, the default is to attempt to
+        auto-detect ISO8601 compliant strings.
 
         * Calendar date representation.
 
@@ -105,6 +142,9 @@ class UTCDateTime(object):
             >>> UTCDateTime("2009001", iso8601=True)       # enforce ISO8601
             UTCDateTime(2009, 1, 1, 0, 0)
 
+            >>> UTCDateTime("2009360T")                    # compact no time
+            UTCDateTime(2009, 12, 26, 0, 0)
+
         * Week date representation.
 
             >>> UTCDateTime("2009-W53-7T12:23:34.5")
@@ -115,6 +155,17 @@ class UTCDateTime(object):
 
             >>> UTCDateTime("2009W011", iso8601=True)      # enforce ISO8601
             UTCDateTime(2008, 12, 29, 0, 0)
+
+        * Specifying time zones.
+
+            >>> UTCDateTime('2019-09-18T+06')  # time zone is UTC+6
+            UTCDateTime(2019, 9, 17, 18, 0)
+
+            >>> UTCDateTime('2019-09-18T02-02')  # time zone is UTC-2
+            UTCDateTime(2019, 9, 18, 4, 0)
+
+            >>> UTCDateTime('2019-09-18T18:23:10.22-01')  # time zone is UTC-1
+            UTCDateTime(2019, 9, 18, 19, 23, 10, 220000)
 
     (3) Using not ISO8601 compatible strings.
 
@@ -151,7 +202,9 @@ class UTCDateTime(object):
 
     (5) Using the following keyword arguments: `year, month, day, julday, hour,
         minute, second, microsecond`. Either the combination of year, month and
-        day, or year and Julian day are required.
+        day, or year and Julian day are required. This is the only input mode
+        that supports using hour, minute, or second values above the natural
+        limits of 24, 60, 60, respectively.
 
         >>> UTCDateTime(year=1970, month=1, day=1, minute=15, microsecond=20)
         UTCDateTime(1970, 1, 1, 0, 15, 0, 20)
@@ -164,6 +217,12 @@ class UTCDateTime(object):
         >>> dt = datetime.datetime(2009, 5, 24, 8, 28, 12, 5001)
         >>> UTCDateTime(dt)
         UTCDateTime(2009, 5, 24, 8, 28, 12, 5001)
+
+    (7) Using strict=False the limits of hour, minute, and second become more
+        flexible:
+
+        >>> UTCDateTime(year=1970, month=1, day=1, hour=48, strict=False)
+        UTCDateTime(1970, 1, 3, 0, 0)
 
     .. rubric:: _`Precision`
 
@@ -182,7 +241,8 @@ class UTCDateTime(object):
 
     You may change that behavior either by,
 
-    (1) using the ``precision`` keyword during object initialization:
+    (1) using the ``precision`` keyword during object initialization
+        (preferred):
 
         >>> dt = UTCDateTime(0, precision=4)
         >>> dt2 = UTCDateTime(0.00001, precision=4)
@@ -191,8 +251,9 @@ class UTCDateTime(object):
         >>> dt == dt2
         True
 
-    (2) or set it the class attribute ``DEFAULT_PRECISION`` for all new
-        :class:`UTCDateTime` objects using a monkey patch:
+    (2) or by setting the class attribute ``DEFAULT_PRECISION`` to the desired
+        precision to affect all new :class:`UTCDateTime` objects
+        (not recommended):
 
         >>> UTCDateTime.DEFAULT_PRECISION = 4
         >>> dt = UTCDateTime(0)
@@ -209,6 +270,8 @@ class UTCDateTime(object):
     .. _ISO8601:2004: https://en.wikipedia.org/wiki/ISO_8601
     """
     DEFAULT_PRECISION = 6
+    _initialized = False
+    _has_warned = False  # this is a temporary, it will be removed soon
 
     def __init__(self, *args, **kwargs):
         """
@@ -218,11 +281,12 @@ class UTCDateTime(object):
         self.precision = kwargs.pop('precision', self.DEFAULT_PRECISION)
         # set directly to nanoseconds if given
         ns = kwargs.pop('ns', None)
+        strict = kwargs.pop('strict', True)
         if ns is not None:
             self._ns = ns
             return
         # iso8601 flag
-        iso8601 = kwargs.pop('iso8601', False) is True
+        iso8601 = kwargs.pop('iso8601', None)
         # check parameter
         if len(args) == 0 and len(kwargs) == 0:
             # use current date/time if no argument is given
@@ -248,17 +312,22 @@ class UTCDateTime(object):
                     timestamp_seconds = int(value.__dict__['timestamp'])
                     timestamp_microseconds = round(
                         (value.__dict__['timestamp'] % 1.0) * 1e6)
-                    dt_ = datetime.datetime.utcfromtimestamp(timestamp_seconds)
+                    dt_ = datetime.datetime.fromtimestamp(
+                        timestamp_seconds, tz=datetime.timezone.utc)
                     dt_ = dt_.replace(microsecond=timestamp_microseconds)
                     self._from_datetime(dt_)
                 return
             # check types
-            try:
-                # got a timestamp
-                self._from_timestamp(value.__float__())
-                return
-            except Exception:
-                pass
+            # The string instance check is mainly needed to not convert
+            # numpy strings as these can be converted to floats on
+            # numpy >= 1.14.
+            if not isinstance(value, (str, bytes)):
+                try:
+                    # got a timestamp
+                    self._from_timestamp(value.__float__())
+                    return
+                except Exception:
+                    pass
             if isinstance(value, datetime.datetime):
                 # got a Python datetime.datetime object
                 self._from_datetime(value)
@@ -269,18 +338,29 @@ class UTCDateTime(object):
                 self._from_datetime(dt)
                 return
             elif isinstance(value, (bytes, str)):
-                if not isinstance(value, (str, native_str)):
+                if not isinstance(value, str):
                     value = value.decode()
                 # got a string instance
                 value = value.strip()
+
+                # Raising in the case where the leading string is less than 4
+                # chars; linked to #2167
+                if re.match(_YEAR0REGEX, value):
+                    raise ValueError(
+                        "'%s' does not start with a 4 digit year" % value)
+
                 # check for ISO8601 date string
-                if value.count("T") == 1 or iso8601:
+                if iso8601 is True or (iso8601 is None and
+                                       re.match(_ISO8601_REGEX, value)):
                     try:
                         self._from_iso8601_string(value)
                         return
                     except Exception:
+                        # raise here if iso8601 is enforced otherwise fallback
+                        # to non iso8601 detection by continuing below
                         if iso8601:
                             raise
+
                 # try to apply some standard patterns
                 value = value.replace('T', ' ')
                 value = value.replace('_', ' ')
@@ -333,12 +413,23 @@ class UTCDateTime(object):
                 return
         # check for ordinal/julian date kwargs
         if 'julday' in kwargs:
+            try:
+                int(kwargs['julday'])
+            except (ValueError, TypeError):
+                msg = "Failed to convert 'julday' to int: {!s}".format(
+                    kwargs['julday'])
+                raise TypeError(msg)
             if 'year' in kwargs:
                 # year given as kwargs
                 year = kwargs['year']
             elif len(args) == 1:
                 # year is first (and only) argument
                 year = args[0]
+            days_in_year = calendar.isleap(year) and 366 or 365
+            if not (1 <= int(kwargs['julday']) <= days_in_year):
+                msg = "'julday' out of bounds for year {!s}: {!s}".format(
+                    year, kwargs['julday'])
+                raise ValueError(msg)
             try:
                 temp = "%4d%03d" % (int(year),
                                     int(kwargs['julday']))
@@ -356,8 +447,31 @@ class UTCDateTime(object):
             kwargs['second'] = int(_sec)
             kwargs['microsecond'] = int(round(_frac * 1e6))
             args = args[0:5]
-        dt = datetime.datetime(*args, **kwargs)
-        self._from_datetime(dt)
+
+        try:  # If a value Error is raised try to allow overflow (see #2222)
+            dt = datetime.datetime(*args, **kwargs)
+        except ValueError:
+            if not strict:
+                self._handle_overflow(*args, **kwargs)
+            else:
+                raise
+        else:
+            self._from_datetime(dt)
+
+    def _handle_overflow(self, year, month, day, hour=0, minute=0, second=0,
+                         microsecond=0):
+        """
+        Handles setting date if an overflow of usual value limits is detected.
+        """
+        # Keep track of seconds due to hour, minute, second
+        seconds = 0
+        seconds += hour * 3600
+        seconds += minute * 60
+        seconds += second
+        # Init UTCDateTime based on year, month, day, add seconds
+        utc_base = UTCDateTime(year=year, month=month, day=day)
+        # Add seconds and set nanoseconds on self
+        self._ns = (utc_base + seconds + microsecond / 1000000).ns
 
     def _set(self, **kwargs):
         """
@@ -380,14 +494,41 @@ class UTCDateTime(object):
                                    second, microsecond)._ns
 
     def _get_ns(self):
+        """
+        Returns POSIX timestamp as integer nanoseconds.
+
+        This is the internal representation of UTCDateTime objects.
+
+        :rtype: int
+        :returns: POSIX timestamp as integer nanoseconds
+        """
         return self.__ns
 
     def _set_ns(self, value):
+        """
+        Set UTCDateTime object from POSIX timestamp as integer nanoseconds.
+
+        :type value: int
+        :param value: POSIX timestamp as integer nanoseconds
+        """
+        # allow setting numpy integer types..
+        if isinstance(value, np.integer):
+            value_ = int(value)
+            # ..and be paranoid and check that it's still the same value after
+            # type casting
+            if value_ != value:
+                msg = ('Numpy integer value ({!s}) changed during casting to '
+                       'Python builtin integer ({!s}).').format(value, value_)
+                raise ValueError(msg)
+            value = value_
         if not isinstance(value, int):
             raise TypeError('nanoseconds must be set as int/long type')
         self.__ns = value
+        # flag that this instance has been initialized; any changes will warn
+        self._initialized = True
 
     _ns = property(_get_ns, _set_ns)
+    ns = property(_get_ns, _set_ns)
 
     def _from_datetime(self, dt):
         """
@@ -396,13 +537,7 @@ class UTCDateTime(object):
         :type dt: :class:`datetime.datetime`
         :param dt: Python datetime object.
         """
-        # see datetime.timedelta.total_seconds
-        try:
-            td = (dt - TIMESTAMP0)
-        except TypeError:
-            td = (dt.replace(tzinfo=None) - dt.utcoffset()) - TIMESTAMP0
-        self._ns = \
-            (td.days * 86400 + td.seconds) * 10**9 + td.microseconds * 1000
+        self._ns = _datetime_to_ns(dt)
 
     def _from_timestamp(self, value):
         """
@@ -544,13 +679,15 @@ class UTCDateTime(object):
         """
         # datetime.utcfromtimestamp will cut off but not round
         # avoid through adding timedelta - also avoids the year 2038 problem
-        dt = datetime.timedelta(seconds=self._ns // 10**9,
-                                microseconds=self._ns % 10**9 // 1000)
+        rounded_ns = round(self._ns, self.precision - 9)
+        dt = datetime.timedelta(seconds=rounded_ns // 10**9,
+                                microseconds=rounded_ns % 10**9 // 1000)
         try:
             return TIMESTAMP0 + dt
         except OverflowError:
             # for very large future / past dates
-            return datetime.datetime.utcfromtimestamp(self.timestamp)
+            return datetime.datetime.fromtimestamp(
+                self.timestamp, tz=datetime.timezone.utc)
 
     datetime = property(_get_datetime)
 
@@ -592,13 +729,6 @@ class UTCDateTime(object):
 
         :param value: Year
         :type value: int
-
-        .. rubric:: Example
-
-        >>> dt = UTCDateTime(2012, 2, 11, 10, 11, 12)
-        >>> dt.year = 2010
-        >>> dt
-        UTCDateTime(2010, 2, 11, 10, 11, 12)
         """
         self._set(year=value)
 
@@ -626,13 +756,6 @@ class UTCDateTime(object):
 
         :param value: Month
         :type value: int
-
-        .. rubric:: Example
-
-        >>> dt = UTCDateTime(2012, 2, 11, 10, 11, 12)
-        >>> dt.month = 10
-        >>> dt
-        UTCDateTime(2012, 10, 11, 10, 11, 12)
         """
         self._set(month=value)
 
@@ -659,13 +782,6 @@ class UTCDateTime(object):
 
         :param value: Day
         :type value: int
-
-        .. rubric:: Example
-
-        >>> dt = UTCDateTime(2012, 2, 11, 10, 11, 12)
-        >>> dt.day = 20
-        >>> dt
-        UTCDateTime(2012, 2, 20, 10, 11, 12)
         """
         self._set(day=value)
 
@@ -727,13 +843,6 @@ class UTCDateTime(object):
 
         :param value: Hours
         :type value: int
-
-        .. rubric:: Example
-
-        >>> dt = UTCDateTime(2012, 2, 11, 10, 11, 12)
-        >>> dt.hour = 20
-        >>> dt
-        UTCDateTime(2012, 2, 11, 20, 11, 12)
         """
         self._set(hour=value)
 
@@ -760,13 +869,6 @@ class UTCDateTime(object):
 
         :param value: Minutes
         :type value: int
-
-        .. rubric:: Example
-
-        >>> dt = UTCDateTime(2012, 2, 11, 10, 11, 12)
-        >>> dt.minute = 20
-        >>> dt
-        UTCDateTime(2012, 2, 11, 10, 20, 12)
         """
         self._set(minute=value)
 
@@ -793,13 +895,6 @@ class UTCDateTime(object):
 
         :param value: Seconds
         :type value: int
-
-        .. rubric:: Example
-
-        >>> dt = UTCDateTime(2012, 2, 11, 10, 11, 12)
-        >>> dt.second = 20
-        >>> dt
-        UTCDateTime(2012, 2, 11, 10, 11, 20)
         """
         self._set(second=value)
 
@@ -818,7 +913,8 @@ class UTCDateTime(object):
         >>> dt.microsecond
         345234
         """
-        return int(self._ns % 10**9 // 1000)
+        ms = int(round(self._ns % 10**9, self.precision - 9) // 1000)
+        return ms % 1000000
 
     def _set_microsecond(self, value):
         """
@@ -826,13 +922,6 @@ class UTCDateTime(object):
 
         :param value: Microseconds
         :type value: int
-
-        .. rubric:: Example
-
-        >>> dt = UTCDateTime(2012, 2, 11, 10, 11, 12, 345234)
-        >>> dt.microsecond = 999123
-        >>> dt
-        UTCDateTime(2012, 2, 11, 10, 11, 12, 999123)
         """
         self._set(microsecond=value)
 
@@ -859,13 +948,6 @@ class UTCDateTime(object):
 
         :param value: Julian day
         :type value: int
-
-        .. rubric:: Example
-
-        >>> dt = UTCDateTime(2008, 12, 5, 12, 30, 35, 45020)
-        >>> dt.julday = 275
-        >>> dt
-        UTCDateTime(2008, 10, 1, 12, 30, 35, 45020)
         """
         self._set(julday=value)
 
@@ -913,6 +995,12 @@ class UTCDateTime(object):
             msg = ("unsupported operand type(s) for +: 'UTCDateTime' and "
                    "'UTCDateTime'")
             raise TypeError(msg)
+        # need to make sure we don't get e.g. np.float32 singl precision input
+        # or worse, because then numpy is in charge of the calculations and
+        # numpy 2.0 is not automatically upcasting to avoid precision loss
+        # which means we can't keep full precision when converting input
+        # seconds to nanoseconds
+        value = float(value)
         return UTCDateTime(ns=self._ns + int(round(value * 1e9)))
 
     def __sub__(self, value):
@@ -943,7 +1031,7 @@ class UTCDateTime(object):
             # see datetime.timedelta.total_seconds
             value = (value.microseconds + (value.seconds + value.days *
                      86400) * 10**6) / 1e6
-        return UTCDateTime(ns=self._ns - int(round(value * 1e9)))
+        return UTCDateTime(ns=self._ns - int(round((value * 1e9))))
 
     def __str__(self):
         """
@@ -958,11 +1046,13 @@ class UTCDateTime(object):
         '2008-10-01T12:30:35.045020Z'
         """
         dt = self.datetime
-        pattern = "%%.%dlf" % (self.precision)
-        ns = pattern % ((self._ns % 10**9) / 1e9)
-        return "%04d-%02d-%02dT%02d:%02d:%02d.%sZ" % (
-            dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
-            ns[2:self.precision + 2])
+        time_str = YMDHMS_FORMAT % tuple(getattr(dt, x) for x in YMDHMS)
+
+        if self.precision > 0:
+            ns = round(self.ns, self.precision - 9)
+            ns_str = ('%09d' % (ns % 10 ** 9))[:self.precision]
+            time_str += ('.' + ns_str)
+        return time_str + 'Z'
 
     def _repr_pretty_(self, p, cycle):  # @UnusedVariable
         p.text(str(self))
@@ -981,38 +1071,46 @@ class UTCDateTime(object):
         """
         return str(self.__str__())
 
+    def _operate(self, other, op_func):
+        if isinstance(other, UTCDateTime):
+            ndigits = min(self.precision, other.precision) - 9
+            if self.precision != other.precision:
+                msg = ('Comparing UTCDateTime objects of different precision'
+                       ' is not defined will raise an Exception in a future'
+                       ' version of obspy')
+                warnings.warn(msg, ObsPyDeprecationWarning)
+            a = round(self._ns, ndigits)
+            b = round(other._ns, ndigits)
+            return op_func(a, b)
+        else:
+            try:
+                return self._operate(UTCDateTime(other), op_func)
+            except TypeError:
+                return False
+
     def __eq__(self, other):
         """
         Rich comparison operator '=='.
 
         .. rubric: Example
 
-        Comparing two UTCDateTime object will always compare timestamps rounded
-        to a precision of 6 digits by default.
+        Comparing two UTCDateTime objects will compare the nanoseconds integers
+        rounded to a number of significant digits determined by the precision
+        attribute.
 
         >>> t1 = UTCDateTime(123.000000012)
         >>> t2 = UTCDateTime(123.000000099)
         >>> t1 == t2
         True
 
-        But the actual timestamp differ
+        Defining a higher precision changes the behavior of the operator
 
-        >>> t1.timestamp == t2.timestamp
-        False
-
-        Resetting the precision changes the behavior of the operator
-
-        >>> t1.precision = 11
+        >>> t1 = UTCDateTime(123.000000012, precision=9)
+        >>> t2 = UTCDateTime(123.000000099, precision=9)
         >>> t1 == t2
         False
         """
-        if isinstance(other, UTCDateTime):
-            return round((self._ns - other._ns) / 1e9, self.__precision) == 0
-        elif isinstance(other, float) or isinstance(other, int):
-            return round(self.timestamp - float(other), self.__precision) == 0
-        elif isinstance(other, datetime.datetime):
-            return self.datetime == other
-        return False
+        return self._operate(other, operator.eq)
 
     def __ne__(self, other):
         """
@@ -1020,24 +1118,21 @@ class UTCDateTime(object):
 
         .. rubric: Example
 
-        Comparing two UTCDateTime object will always compare timestamps rounded
-        to a precision of 6 digits by default.
+        Comparing two UTCDateTime objects will compare the nanoseconds integers
+        rounded to a number of significant digits determined by the precision
+        attribute.
 
         >>> t1 = UTCDateTime(123.000000012)
         >>> t2 = UTCDateTime(123.000000099)
-        >>> t1 != t2
+        >>> t1 == t2
+        True
+
+        Defining a higher precision changes the behavior of the operator
+
+        >>> t1 = UTCDateTime(123.000000012, precision=9)
+        >>> t2 = UTCDateTime(123.000000099, precision=9)
+        >>> t1 == t2
         False
-
-        But the actual timestamp differ
-
-        >>> t1.timestamp != t2.timestamp
-        True
-
-        Resetting the precision changes the behavior of the operator
-
-        >>> t1.precision = 11
-        >>> t1 != t2
-        True
         """
         return not self.__eq__(other)
 
@@ -1047,32 +1142,23 @@ class UTCDateTime(object):
 
         .. rubric: Example
 
-        Comparing two UTCDateTime object will always compare timestamps rounded
-        to a precision of 6 digits by default.
+        Comparing two UTCDateTime objects will compare the nanoseconds integers
+        rounded to a number of significant digits determined by the precision
+        attribute.
 
         >>> t1 = UTCDateTime(123.000000012)
         >>> t2 = UTCDateTime(123.000000099)
         >>> t1 < t2
         False
 
-        But the actual timestamp differ
+        Defining a higher precision changes the behavior of the operator
 
-        >>> t1.timestamp < t2.timestamp
-        True
-
-        Resetting the precision changes the behavior of the operator
-
-        >>> t1.precision = 11
+        >>> t1 = UTCDateTime(123.000000012, precision=9)
+        >>> t2 = UTCDateTime(123.000000099, precision=9)
         >>> t1 < t2
         True
         """
-        if isinstance(other, UTCDateTime):
-            return round((self._ns - other._ns) / 1e9, self.__precision) < 0
-        elif isinstance(other, float) or isinstance(other, int):
-            return round(self.timestamp - float(other), self.__precision) < 0
-        elif isinstance(other, datetime.datetime):
-            return self.datetime < other
-        return False
+        return self._operate(other, operator.lt)
 
     def __le__(self, other):
         """
@@ -1080,32 +1166,23 @@ class UTCDateTime(object):
 
         .. rubric: Example
 
-        Comparing two UTCDateTime object will always compare timestamps rounded
-        to a precision of 6 digits by default.
+        Comparing two UTCDateTime objects will compare the nanoseconds integers
+        rounded to a number of significant digits determined by the precision
+        attribute.
 
         >>> t1 = UTCDateTime(123.000000099)
         >>> t2 = UTCDateTime(123.000000012)
         >>> t1 <= t2
         True
 
-        But the actual timestamp differ
+        Defining a higher precision changes the behavior of the operator
 
-        >>> t1.timestamp <= t2.timestamp
-        False
-
-        Resetting the precision changes the behavior of the operator
-
-        >>> t1.precision = 11
+        >>> t1 = UTCDateTime(123.000000099, precision=9)
+        >>> t2 = UTCDateTime(123.000000012, precision=9)
         >>> t1 <= t2
         False
         """
-        if isinstance(other, UTCDateTime):
-            return round((self._ns - other._ns) / 1e9, self.__precision) <= 0
-        elif isinstance(other, float) or isinstance(other, int):
-            return round(self.timestamp - float(other), self.__precision) <= 0
-        elif isinstance(other, datetime.datetime):
-            return self.datetime <= other
-        return False
+        return self._operate(other, operator.le)
 
     def __gt__(self, other):
         """
@@ -1113,32 +1190,23 @@ class UTCDateTime(object):
 
         .. rubric: Example
 
-        Comparing two UTCDateTime object will always compare timestamps rounded
-        to a precision of 6 digits by default.
+        Comparing two UTCDateTime objects will compare the nanoseconds integers
+        rounded to a number of significant digits determined by the precision
+        attribute.
 
         >>> t1 = UTCDateTime(123.000000099)
         >>> t2 = UTCDateTime(123.000000012)
         >>> t1 > t2
         False
 
-        But the actual timestamp differ
+        Defining a higher precision changes the behavior of the operator
 
-        >>> t1.timestamp > t2.timestamp
-        True
-
-        Resetting the precision changes the behavior of the operator
-
-        >>> t1.precision = 11
+        >>> t1 = UTCDateTime(123.000000099, precision=9)
+        >>> t2 = UTCDateTime(123.000000012, precision=9)
         >>> t1 > t2
         True
         """
-        if isinstance(other, UTCDateTime):
-            return round((self._ns - other._ns) / 1e9, self.__precision) > 0
-        elif isinstance(other, float) or isinstance(other, int):
-            return round(self.timestamp - float(other), self.__precision) > 0
-        elif isinstance(other, datetime.datetime):
-            return self.datetime > other
-        return False
+        return self._operate(other, operator.gt)
 
     def __ge__(self, other):
         """
@@ -1146,32 +1214,23 @@ class UTCDateTime(object):
 
         .. rubric: Example
 
-        Comparing two UTCDateTime object will always compare timestamps rounded
-        to a precision of 6 digits by default.
+        Comparing two UTCDateTime objects will compare the nanoseconds integers
+        rounded to a number of significant digits determined by the precision
+        attribute.
 
         >>> t1 = UTCDateTime(123.000000012)
         >>> t2 = UTCDateTime(123.000000099)
         >>> t1 >= t2
         True
 
-        But the actual timestamp differ
+        Defining a higher precision changes the behavior of the operator
 
-        >>> t1.timestamp >= t2.timestamp
-        False
-
-        Resetting the precision changes the behavior of the operator
-
-        >>> t1.precision = 11
+        >>> t1 = UTCDateTime(123.000000012, precision=9)
+        >>> t2 = UTCDateTime(123.000000099, precision=9)
         >>> t1 >= t2
         False
         """
-        if isinstance(other, UTCDateTime):
-            return round((self._ns - other._ns) / 1e9, self.__precision) >= 0
-        elif isinstance(other, float) or isinstance(other, int):
-            return round(self.timestamp - float(other), self.__precision) >= 0
-        elif isinstance(other, datetime.datetime):
-            return self.datetime >= other
-        return False
+        return self._operate(other, operator.ge)
 
     def __repr__(self):
         """
@@ -1197,6 +1256,16 @@ class UTCDateTime(object):
         # explicitly flag it as unhashable
         return None
 
+    def __setattr__(self, key, value):
+        # raise a warning if overwriting previous ns (see #2072)
+        if self._initialized and not self._has_warned:
+            msg = ('Setting attributes on UTCDateTime instances will raise an'
+                   ' Exception in a future version of Obspy.')
+            warnings.warn(msg, ObsPyDeprecationWarning)
+            # only issue the warning once per object
+            self.__dict__['_has_warned'] = True
+        super(UTCDateTime, self).__setattr__(key, value)
+
     def strftime(self, format):
         """
         Return a string representing the date and time, controlled by an
@@ -1210,6 +1279,14 @@ class UTCDateTime(object):
         See methods :meth:`~datetime.datetime.strftime()` and
         :meth:`~datetime.datetime.strptime()` for more information.
         """
+        # This is an attempt to get consistent behavior across platforms.
+        # See https://bugs.python.org/issue32195
+        # and https://bugs.python.org/issue13305
+        # This is an issue of glibc implementation differing across platforms,
+        # out of control of Python, but we still try to be consistent across
+        # all platforms
+        if sys.platform.startswith("linux"):
+            format = format.replace("%Y", "%04Y")
         return self.datetime.strftime(format)
 
     @staticmethod
@@ -1306,14 +1383,15 @@ class UTCDateTime(object):
         """
         Returns a tuple containing (ISO year, ISO week number, ISO weekday).
 
-        :rtype: tuple of ints
-        :return: Returns a tuple containing ISO year, ISO week number and ISO
-            weekday.
+        :rtype: tuple(int)
+        :return: Returns a (named) tuple containing ISO year, ISO week number
+            and ISO weekday. Depending on the used Python version it either
+            returns a tuple (Py<3.9) or named tuple (Py>=3.9).
 
         .. rubric:: Example
 
         >>> dt = UTCDateTime(2008, 10, 1, 12, 30, 35, 45020)
-        >>> dt.isocalendar()
+        >>> tuple(dt.isocalendar())
         (2008, 40, 3)
         """
         return self.datetime.isocalendar()
@@ -1337,11 +1415,12 @@ class UTCDateTime(object):
         >>> dt.isoformat()
         '2008-10-01T00:00:00'
         """
-        return self.datetime.isoformat(sep=native_str(sep))
+        return self.datetime.isoformat(sep=sep)
 
     def format_fissures(self):
         """
-        Returns string representation for the IRIS Fissures protocol.
+        Returns string representation for the Earthscope/IRIS Fissures
+        protocol.
 
         :return: string
 
@@ -1395,7 +1474,7 @@ class UTCDateTime(object):
         :type compact: bool, optional
         :param compact: Delivers a compact SEED date string if enabled. Default
             value is set to False.
-        :rtype: string
+        :rtype: str
         :return: Datetime string in the SEED format.
 
         .. rubric:: Example
@@ -1430,7 +1509,8 @@ class UTCDateTime(object):
 
     def format_iris_web_service(self):
         """
-        Returns string representation usable for the IRIS Web services.
+        Returns string representation usable for the EarthScope/IRIS Web
+        services.
 
         :return: string
 
@@ -1479,17 +1559,67 @@ class UTCDateTime(object):
             >>> dt = UTCDateTime(precision=5)
             >>> dt.precision
             5
-
-        (3) Set precision for an existing UTCDateTime object.
-
-            >>> dt = UTCDateTime()
-            >>> dt.precision = 12
-            >>> dt.precision
-            12
         """
+        if value > 9:
+            msg = 'UTCDateTime precision above 9 is not supported, using 9'
+            warnings.warn(msg)
+            value = 9
         self.__precision = int(value)
 
     precision = property(_get_precision, _set_precision)
+
+    def replace(self, **kwargs):
+        """
+        Return a new UTCDateTime object with one or more parameters replaced.
+
+        Replace is useful for substituting parameters that depend on other
+        parameters (eg hour depends on the current day for meaning). In order
+        to replace independent parameters, such as timestamp, ns, or
+        precision, simply create a new UTCDateTime instance.
+
+        The following parameters are supported: year, month, day, julday,
+        hour, minute second, microsecond. Additionally, the keyword 'strict'
+        can be set to False to allow hour, minute, and second to exceed normal
+        limits.
+
+        .. rubric:: Example
+
+        (1) Get time of the 15th day of the same month to which a timestamp
+            belongs.
+
+            >>> dt = UTCDateTime(999999999)
+            >>> dt2 = dt.replace(day=15)
+            >>> print(dt2)
+            2001-09-15T01:46:39.000000Z
+
+
+        (2) Determine the day of the week 2 months before Guy Fawkes day.
+
+            >>> dt = UTCDateTime('1605-11-05')
+            >>> dt.replace(month=9).weekday
+            0
+        """
+        # check parameters, raise Value error if any are unsupported
+        supported_args = set(YMDHMS) | set(YJHMS) | {'microsecond', 'strict'}
+        if not set(kwargs).issubset(supported_args):
+            unsupported_args = set(kwargs) - supported_args
+            msg = ('%s are not supported arguments for replace, supported '
+                   'arguments are %s') % (unsupported_args, supported_args)
+            raise ValueError(msg)
+        # ensure julday is used correctly if used
+        if kwargs.get('julday') is not None:
+            if 'month' in kwargs or 'day' in kwargs:
+                msg = 'If julday is used month and day cannot be used.'
+                raise ValueError(msg)
+            time_paramters = YJHMS  # use julday
+
+        else:
+            time_paramters = YMDHMS  # use month and day
+        # get a dict of time parameters to pass to UTCDateTime constructor
+        new_dict = {x: getattr(self, x) for x in time_paramters}
+        new_dict['microsecond'] = self.microsecond
+        new_dict.update(kwargs)
+        return UTCDateTime(**new_dict)
 
     def toordinal(self):
         """
@@ -1543,13 +1673,29 @@ class UTCDateTime(object):
         :meth:`obspy.core.stream.Stream.plot()`.
 
         >>> t = UTCDateTime("2009-08-24T00:20:07.700000Z")
-        >>> t.matplotlib_date
-        733643.0139780092
+        >>> t.matplotlib_date  # doctest: +SKIP
+        14480.01397800926
 
         :rtype: float
         """
         from matplotlib.dates import date2num
         return date2num(self.datetime)
+
+
+def _datetime_to_ns(dt):
+    """
+    Use Python datetime object to return equivalent nanoseconds.
+
+    :type dt: :class:`datetime.datetime`
+    :param dt: Python datetime object.
+    :returns: nanoseconds as an int.
+    """
+    try:
+        td = (dt - TIMESTAMP0)
+    except TypeError:
+        td = (dt.replace(tzinfo=None) - dt.utcoffset()) - TIMESTAMP0
+    # see datetime.timedelta.total_seconds
+    return (td.days * 86400 + td.seconds) * 10**9 + td.microseconds * 1000
 
 
 if __name__ == '__main__':

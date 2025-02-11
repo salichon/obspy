@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Module for handling ObsPy Stream objects.
+Module for handling ObsPy :class:`~obspy.core.stream.Stream` objects.
 
 :copyright:
     The ObsPy Development Team (devs@obspy.org)
@@ -8,18 +8,14 @@ Module for handling ObsPy Stream objects.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-from future.utils import PY3, native_str
-
+import collections
 import copy
 import fnmatch
 import math
-import os
 import pickle
 import re
 import warnings
+from pathlib import Path
 from glob import glob, has_magic
 
 import numpy as np
@@ -27,13 +23,14 @@ import numpy as np
 from obspy.core import compatibility
 from obspy.core.trace import Trace
 from obspy.core.utcdatetime import UTCDateTime
-from obspy.core.util import NamedTemporaryFile
+from obspy.core.util.attribdict import AttribDict
 from obspy.core.util.base import (ENTRY_POINTS, _get_function_from_entry_point,
-                                  _read_from_plugin, download_to_file,
-                                  sanitize_filename)
+                                  _read_from_plugin, _generic_reader)
 from obspy.core.util.decorator import (map_example_filename,
                                        raise_if_masked, uncompress_file)
-from obspy.core.util.misc import get_window_times, buffered_load_entry_point
+from obspy.core.util.misc import (
+    get_window_times, buffered_load_entry_point, ptp)
+from obspy.core.util.obspy_types import ObsPyException
 
 
 _headonly_warning_msg = (
@@ -45,7 +42,8 @@ def read(pathname_or_url=None, format=None, headonly=False, starttime=None,
          endtime=None, nearest_sample=True, dtype=None, apply_calib=False,
          check_compression=True, **kwargs):
     """
-    Read waveform files into an ObsPy Stream object.
+    Read waveform files into an ObsPy :class:`~obspy.core.stream.Stream`
+    object.
 
     The :func:`~obspy.core.stream.read` function opens either one or multiple
     waveform files given via file name or URL using the ``pathname_or_url``
@@ -58,11 +56,11 @@ def read(pathname_or_url=None, format=None, headonly=False, starttime=None,
     ``list``-like object of multiple ObsPy :class:`~obspy.core.trace.Trace`
     objects.
 
-    :type pathname_or_url: str or io.BytesIO, optional
-    :param pathname_or_url: String containing a file name or a URL or a open
-        file-like object. Wildcards are allowed for a file name. If this
-        attribute is omitted, an example :class:`~obspy.core.stream.Stream`
-        object will be returned.
+    :type pathname_or_url: str, io.BytesIO, or pathlib.Path, optional
+    :param pathname_or_url: String containing a file name or a URL, a Path
+        object, or a open file-like object. Wildcards are allowed for a file
+        name. If this attribute is omitted, an example
+        :class:`~obspy.core.stream.Stream` object will be returned.
     :type format: str, optional
     :param format: Format of the file to read (e.g. ``"MSEED"``). See
         the `Supported Formats`_ section below for a list of supported formats.
@@ -201,51 +199,34 @@ def read(pathname_or_url=None, format=None, headonly=False, starttime=None,
     kwargs['endtime'] = endtime
     kwargs['nearest_sample'] = nearest_sample
     kwargs['check_compression'] = check_compression
-    # create stream
-    st = Stream()
+    kwargs['headonly'] = headonly
+    kwargs['format'] = format
+
     if pathname_or_url is None:
         # if no pathname or URL specified, return example stream
         st = _create_example_stream(headonly=headonly)
-    elif not isinstance(pathname_or_url, (str, native_str)):
-        # not a string - we assume a file-like object
-        pathname_or_url.seek(0)
-        try:
-            # first try reading directly
-            stream = _read(pathname_or_url, format, headonly, **kwargs)
-            st.extend(stream.traces)
-        except TypeError:
-            # if this fails, create a temporary file which is read directly
-            # from the file system
-            pathname_or_url.seek(0)
-            with NamedTemporaryFile() as fh:
-                fh.write(pathname_or_url.read())
-                st.extend(_read(fh.name, format, headonly, **kwargs).traces)
-        pathname_or_url.seek(0)
-    elif "://" in pathname_or_url:
-        # some URL
-        # extract extension if any
-        suffix = os.path.basename(pathname_or_url).partition('.')[2] or '.tmp'
-        with NamedTemporaryFile(suffix=sanitize_filename(suffix)) as fh:
-            download_to_file(url=pathname_or_url, filename_or_buffer=fh)
-            st.extend(_read(fh.name, format, headonly, **kwargs).traces)
     else:
-        # some file name
-        pathname = pathname_or_url
-        for file in sorted(glob(pathname)):
-            st.extend(_read(file, format, headonly, **kwargs).traces)
-        if len(st) == 0:
-            # try to give more specific information why the stream is empty
-            if has_magic(pathname) and not glob(pathname):
-                raise Exception("No file matching file pattern: %s" % pathname)
-            elif not has_magic(pathname) and not os.path.isfile(pathname):
-                raise IOError(2, "No such file or directory", pathname)
-            # Only raise error if no start/end time has been set. This
-            # will return an empty stream if the user chose a time window with
-            # no data in it.
-            # XXX: Might cause problems if the data is faulty and the user
-            # set start/end time. Not sure what to do in this case.
-            elif not starttime and not endtime:
-                raise Exception("Cannot open file/files: %s" % pathname)
+        st = _generic_reader(pathname_or_url, _read, **kwargs)
+
+    if len(st) == 0:
+        if isinstance(pathname_or_url, Path):
+            pathname_or_url = str(pathname_or_url)
+        # try to give more specific information why the stream is empty
+        if isinstance(pathname_or_url, str) and \
+                has_magic(pathname_or_url) and not glob(pathname_or_url):
+            raise Exception("No file matching file pattern: %s" %
+                            pathname_or_url)
+        elif isinstance(pathname_or_url, str) and \
+                not has_magic(pathname_or_url) and \
+                not Path(pathname_or_url).is_file():
+            raise IOError(2, "No such file or directory", pathname_or_url)
+        # Only raise error if no start/end time has been set. This
+        # will return an empty stream if the user chose a time window with
+        # no data in it.
+        # XXX: Might cause problems if the data is faulty and the user
+        # set start/end time. Not sure what to do in this case.
+        elif not starttime and not endtime:
+            raise Exception("Cannot open file/files: %s" % pathname_or_url)
     # Trim if times are given.
     if headonly and (starttime or endtime or dtype):
         warnings.warn(_headonly_warning_msg, UserWarning)
@@ -256,9 +237,6 @@ def read(pathname_or_url=None, format=None, headonly=False, starttime=None,
         st._rtrim(endtime, nearest_sample=nearest_sample)
     # convert to dtype if given
     if dtype:
-        # For compatibility with NumPy 1.4
-        if isinstance(dtype, str):
-            dtype = native_str(dtype)
         for tr in st:
             tr.data = np.require(tr.data, dtype)
     # applies calibration factor
@@ -298,9 +276,9 @@ def _create_example_stream(headonly=False):
                'zeros': [0j, 0j]}}
 
     """
-    data_dir = os.path.join(os.path.dirname(__file__), "data")
+    data_dir = Path(__file__).parent / "data"
     if not headonly:
-        path = os.path.join(data_dir, "example.npz")
+        path = data_dir / "example.npz"
         data = np.load(path)
     st = Stream()
     for channel in ["EHZ", "EHN", "EHE"]:
@@ -319,14 +297,15 @@ def _create_example_stream(headonly=False):
         else:
             st.append(Trace(header=header))
     from obspy import read_inventory
-    inv = read_inventory(os.path.join(data_dir, "BW_RJOB.xml"))
+    inv = read_inventory(data_dir / "BW_RJOB.xml")
     st.attach_response(inv)
     return st
 
 
 class Stream(object):
     """
-    List like object of multiple ObsPy Trace objects.
+    List like object of multiple ObsPy :class:`~obspy.core.trace.Trace`
+    objects.
 
     :type traces: list of :class:`~obspy.core.trace.Trace`, optional
     :param traces: Initial list of ObsPy :class:`~obspy.core.trace.Trace`
@@ -566,6 +545,14 @@ class Stream(object):
         """
         Implements rich comparison of Stream objects for "==" operator.
 
+        Trace order does not effect the comparison because the traces are
+        sorted beforehand.
+
+        This function strictly compares the data and stats objects of each
+        trace contained by the streams. If less strict behavior is desired,
+        which may be the case for testing, consider using the
+        :func:`~obspy.core.util.testing.streams_almost_equal` function.
+
         :type other: :class:`~obspy.core.stream.Stream`
         :param other: Stream object for comparison.
         :rtype: bool
@@ -679,7 +666,7 @@ class Stream(object):
         """
         Append a single Trace object to the current Stream object.
 
-        :param trace: :class:`~obspy.core.stream.Trace` object.
+        :param trace: :class:`~obspy.core.trace.Trace` object.
 
         .. rubric:: Example
 
@@ -757,7 +744,9 @@ class Stream(object):
 
         Please be aware that no sorting and checking of stations, channels, ...
         is done. This method only compares the start and end times of the
-        Traces.
+        Traces and the start and end times of segments within Traces that
+        contain masked arrays (i.e., Traces that were merged without a fill
+        value).
 
         .. rubric:: Example
 
@@ -794,7 +783,14 @@ class Stream(object):
         copied_traces = copy.copy(self.traces)
         self.sort()
         gap_list = []
-        for _i in range(len(self.traces) - 1):
+        for _i in range(len(self.traces)):
+            # if the trace is masked, break it up and run get_gaps on the
+            # resulting stream
+            if isinstance(self.traces[_i].data, np.ma.masked_array):
+                gap_list.extend(self.traces[_i].split().get_gaps())
+            if _i + 1 == len(self.traces):
+                # reached the last trace
+                break
             # skip traces with different network, station, location or channel
             if self.traces[_i].id != self.traces[_i + 1].id:
                 continue
@@ -804,7 +800,7 @@ class Stream(object):
             else:
                 same_sampling_rate = False
             stats = self.traces[_i].stats
-            stime = stats['endtime']
+            stime = min(stats['endtime'], self.traces[_i + 1].stats['endtime'])
             etime = self.traces[_i + 1].stats['starttime']
             # last sample of earlier trace represents data up to time of last
             # sample (stats.endtime) plus one delta
@@ -827,6 +823,24 @@ class Stream(object):
                 nsamples = -nsamples
             # skip if is equal to delta (1 / sampling rate)
             if same_sampling_rate and nsamples == 0:
+                continue
+            # check if gap is already covered in trace before:
+            covered = False
+            # only need to check previous traces because the traces are sorted
+            for prev_trace in self.traces[:_i]:
+                prev_stats = prev_trace.stats
+                # look if trace is contained in other trace
+                prev_start = prev_stats['starttime']
+                prev_end = prev_stats['endtime']
+                if not (prev_start < stime < etime < prev_end):
+                    continue
+                # don't look in traces of other measurements
+                elif self.traces[_i].id != prev_trace.id:
+                    continue
+                else:
+                    covered = True
+                    break
+            if covered:
                 continue
             gap_list.append([stats['network'], stats['station'],
                              stats['location'], stats['channel'],
@@ -910,8 +924,6 @@ class Stream(object):
         :param transparent: Make all backgrounds transparent (True/False). This
             will override the ``bgcolor`` and ``face_color`` arguments.
             Defaults to ``False``.
-        :param number_of_ticks: The number of ticks on the x-axis.
-            Defaults to ``4``.
         :param tick_format: The way the time axis is formatted.
             Defaults to ``'%H:%M:%S'`` or ``'%.2f'`` if ``type='relative'``.
         :param tick_rotation: Tick rotation in degrees.
@@ -999,6 +1011,8 @@ class Stream(object):
             backslashes, or use r-prefixed strings, e.g.,
             ``r"$\\\\frac{m}{s}$"``.
             Defaults to ``None``, meaning no scale is drawn.
+        :param number_of_ticks: The number of ticks on the x-axis.
+            Defaults to ``4``.
         :param events: An optional list of events can be drawn on the plot if
             given.  They will be displayed as yellow stars with optional
             annotations.  They are given as a list of dictionaries. Each
@@ -1417,6 +1431,10 @@ class Stream(object):
 
         %s
         """
+        if not self.traces:
+            msg = 'Can not write empty stream to file.'
+            raise ObsPyException(msg)
+
         # Check all traces for masked arrays and raise exception.
         for trace in self.traces:
             if isinstance(trace.data, np.ma.masked_array):
@@ -1426,7 +1444,7 @@ class Stream(object):
                 raise NotImplementedError(msg)
         if format is None:
             # try to guess format from file extension
-            _, format = os.path.splitext(filename)
+            format = Path(filename).suffix
             format = format[1:]
         format = format.upper()
         try:
@@ -1443,7 +1461,7 @@ class Stream(object):
         write_format(self, filename, **kwargs)
 
     def trim(self, starttime=None, endtime=None, pad=False,
-             nearest_sample=True, fill_value=None):
+             keep_empty_traces=False, nearest_sample=True, fill_value=None):
         """
         Cut all traces of this Stream object to given start and end time.
 
@@ -1455,6 +1473,9 @@ class Stream(object):
         :param pad: Gives the possibility to trim at time points outside the
             time frame of the original trace, filling the trace with the
             given ``fill_value``. Defaults to ``False``.
+        :type keep_empty_traces: bool, optional
+        :param keep_empty_traces: Empty traces will be kept if set to ``True``.
+            Defaults to ``False``.
         :type nearest_sample: bool, optional
         :param nearest_sample: If set to ``True``, the closest sample is
             selected, if set to ``False``, the inner (next sample for a
@@ -1500,24 +1521,31 @@ class Stream(object):
         BW.RJOB..EHE | 2009-08-24T00:20:20.000000Z ... | 100.0 Hz, 501 samples
         """
         if not self:
-            return
+            return self
         # select start/end time fitting to a sample point of the first trace
         if nearest_sample:
             tr = self.traces[0]
-            if starttime:
-                delta = compatibility.round_away(
-                    (starttime - tr.stats.starttime) * tr.stats.sampling_rate)
-                starttime = tr.stats.starttime + delta * tr.stats.delta
-            if endtime:
-                delta = compatibility.round_away(
-                    (endtime - tr.stats.endtime) * tr.stats.sampling_rate)
-                # delta is negative!
-                endtime = tr.stats.endtime + delta * tr.stats.delta
+            try:
+                if starttime is not None:
+                    delta = compatibility.round_away(
+                        (starttime - tr.stats.starttime) *
+                        tr.stats.sampling_rate)
+                    starttime = tr.stats.starttime + delta * tr.stats.delta
+                if endtime is not None:
+                    delta = compatibility.round_away(
+                        (endtime - tr.stats.endtime) * tr.stats.sampling_rate)
+                    # delta is negative!
+                    endtime = tr.stats.endtime + delta * tr.stats.delta
+            except TypeError:
+                msg = ('starttime and endtime must be UTCDateTime objects '
+                       'or None for this call to Stream.trim()')
+                raise TypeError(msg)
         for trace in self.traces:
             trace.trim(starttime, endtime, pad=pad,
                        nearest_sample=nearest_sample, fill_value=fill_value)
-        # remove empty traces after trimming
-        self.traces = [_i for _i in self.traces if _i.stats.npts]
+        if not keep_empty_traces:
+            # remove empty traces after trimming
+            self.traces = [_i for _i in self.traces if _i.stats.npts]
         return self
 
     def _ltrim(self, starttime, pad=False, nearest_sample=True):
@@ -1630,6 +1658,26 @@ class Stream(object):
         BW.RJOB..EHN | 2009-08-24T00:20:20.000000Z ... | 100.0 Hz, 501 samples
         BW.RJOB..EHE | 2009-08-24T00:20:20.000000Z ... | 100.0 Hz, 501 samples
         """
+        if not self:
+            return copy.copy(self)
+        # select start/end time fitting to a sample point of the first trace
+        if nearest_sample:
+            tr = self.traces[0]
+            try:
+                if starttime is not None:
+                    delta = compatibility.round_away(
+                        (starttime - tr.stats.starttime) *
+                        tr.stats.sampling_rate)
+                    starttime = tr.stats.starttime + delta * tr.stats.delta
+                if endtime is not None:
+                    delta = compatibility.round_away(
+                        (endtime - tr.stats.endtime) * tr.stats.sampling_rate)
+                    # delta is negative!
+                    endtime = tr.stats.endtime + delta * tr.stats.delta
+            except TypeError:
+                msg = ('starttime and endtime must be UTCDateTime objects '
+                       'or None for this call to Stream.slice()')
+                raise TypeError(msg)
         tmp = copy.copy(self)
         tmp.traces = []
         new = tmp.copy()
@@ -1723,10 +1771,16 @@ class Stream(object):
             yield temp
 
     def select(self, network=None, station=None, location=None, channel=None,
-               sampling_rate=None, npts=None, component=None, id=None):
+               sampling_rate=None, npts=None, component=None, id=None,
+               inventory=None):
         """
         Return new Stream object only with these traces that match the given
         stats criteria (e.g. all traces with ``channel="EHZ"``).
+
+        Alternatively, traces can be selected based on the content of an
+        :class:`~obspy.core.inventory.inventory.Inventory` object: trace will
+        be selected if the inventory contains a matching channel active at the
+        trace start time.
 
         .. rubric:: Examples
 
@@ -1753,6 +1807,25 @@ class Stream(object):
         >>> print(st2)  # doctest: +NORMALIZE_WHITESPACE
         0 Trace(s) in Stream:
 
+        >>> from obspy import read_inventory
+        >>> inv = read_inventory('/path/to/BW_RJOB__EHZ.xml')
+        >>> print(inv)  # doctest: +NORMALIZE_WHITESPACE
+        Inventory created at 2013-12-07T18:00:42.878000Z
+                Created by: fdsn-stationxml-converter/1.0.0
+                            http://www.iris.edu/fdsnstationconverter
+                Sending institution: Erdbebendienst Bayern
+                Contains:
+                        Networks (1):
+                                BW
+                        Stations (1):
+                                BW.RJOB (Jochberg, Bavaria, BW-Net)
+                        Channels (1):
+                                BW.RJOB..EHZ
+        >>> st2 = st.select(inventory=inv)
+        >>> print(st2)  # doctest: +ELLIPSIS
+        1 Trace(s) in Stream:
+        BW.RJOB..EHZ | 2009-08-24T00:20:03.000000Z ... | 100.0 Hz, 3000 samples
+
         .. warning::
             A new Stream object is returned but the traces it contains are
             just aliases to the traces of the original stream. Does not copy
@@ -1772,16 +1845,72 @@ class Stream(object):
         All other selection criteria that accept strings (network, station,
         location) may also contain Unix style wildcards (``*``, ``?``, ...).
         """
+        if inventory is None:
+            traces = self.traces
+        else:
+            trace_ids = []
+            start_dates = []
+            end_dates = []
+            for net in inventory.networks:
+                for sta in net.stations:
+                    for chan in sta.channels:
+                        _id = '.'.join((net.code, sta.code,
+                                        chan.location_code, chan.code))
+                        trace_ids.append(_id)
+                        start_dates.append(chan.start_date)
+                        end_dates.append(chan.end_date)
+            traces = []
+            for trace in self:
+                idx = 0
+                while True:
+                    try:
+                        idx = trace_ids.index(trace.id, idx)
+                        start_date = start_dates[idx]
+                        end_date = end_dates[idx]
+                        idx += 1
+                        if start_date is not None and\
+                                trace.stats.starttime < start_date:
+                            continue
+                        if end_date is not None and\
+                                trace.stats.endtime > end_date:
+                            continue
+                        traces.append(trace)
+                    except ValueError:
+                        break
+        traces_after_inventory_filter = traces
+
         # make given component letter uppercase (if e.g. "z" is given)
-        if component and channel:
+        if component is not None and channel is not None:
             component = component.upper()
             channel = channel.upper()
-            if channel[-1] != "*" and component != channel[-1]:
+            if (channel[-1:] not in "?*" and component not in "?*" and
+                    component != channel[-1:]):
                 msg = "Selection criteria for channel and component are " + \
                       "mutually exclusive!"
                 raise ValueError(msg)
+
+        # For st.select(id=) without wildcards, use a quicker comparison mode:
+        quick_check = False
+        quick_check_possible = (id is not None
+                                and sampling_rate is None and npts is None
+                                and network is None and station is None
+                                and location is None and channel is None
+                                and component is None)
+        if quick_check_possible:
+            no_wildcards = not any(['?' in id or '*' in id or '[' in id])
+            if no_wildcards:
+                quick_check = True
+                [net, sta, loc, chan] = id.upper().split('.')
+
         traces = []
-        for trace in self:
+        for trace in traces_after_inventory_filter:
+            if quick_check:
+                if (trace.stats.network.upper() == net
+                        and trace.stats.station.upper() == sta
+                        and trace.stats.location.upper() == loc
+                        and trace.stats.channel.upper() == chan):
+                    traces.append(trace)
+                continue
             # skip trace if any given criterion is not matched
             if id and not fnmatch.fnmatch(trace.id.upper(), id.upper()):
                 continue
@@ -1807,7 +1936,7 @@ class Stream(object):
             if npts is not None and int(npts) != trace.stats.npts:
                 continue
             if component is not None:
-                if not fnmatch.fnmatch(trace.stats.channel[-1].upper(),
+                if not fnmatch.fnmatch(trace.stats.component.upper(),
                                        component.upper()):
                     continue
             traces.append(trace)
@@ -1846,20 +1975,23 @@ class Stream(object):
             # Check sampling rate.
             sr.setdefault(trace.id, trace.stats.sampling_rate)
             if trace.stats.sampling_rate != sr[trace.id]:
-                msg = "Can't merge traces with same ids but differing " + \
-                      "sampling rates!"
+                msg = (f"Can not merge traces with same ids ({trace.id}) but "
+                       f"differing sampling rates ({sr[trace.id]}, "
+                       f"{trace.stats.sampling_rate})!")
                 raise Exception(msg)
             # Check dtype.
             dtype.setdefault(trace.id, trace.data.dtype)
             if trace.data.dtype != dtype[trace.id]:
-                msg = "Can't merge traces with same ids but differing " + \
-                      "data types!"
+                msg = (f"Can not merge traces with same ids ({trace.id}) but "
+                       f"differing data types ({dtype[trace.id]}, "
+                       f"{trace.data.dtype})!")
                 raise Exception(msg)
             # Check calibration factor.
             calib.setdefault(trace.id, trace.stats.calib)
             if trace.stats.calib != calib[trace.id]:
-                msg = "Can't merge traces with same ids but differing " + \
-                      "calibration factors.!"
+                msg = (f"Can not merge traces with same ids ({trace.id}) but "
+                       f"differing calibration factors ({calib[trace.id]}, "
+                       f"{trace.stats.calib})!")
                 raise Exception(msg)
 
     def merge(self, method=0, fill_value=None, interpolation_samples=0,
@@ -1908,7 +2040,7 @@ class Stream(object):
 
         self._cleanup(**kwargs)
         if method == -1:
-            return
+            return self
         # check sampling rates and dtypes
         self._merge_checks()
         # remember order of traces
@@ -2055,7 +2187,7 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         return self
 
     @raise_if_masked
-    def filter(self, type, **options):
+    def filter(self, type, *args, **options):
         """
         Filter the data of all traces in the Stream.
 
@@ -2063,7 +2195,10 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         :param type: String that specifies which filter is applied (e.g.
             ``"bandpass"``). See the `Supported Filter`_ section below for
             further details.
-        :param options: Necessary keyword arguments for the respective filter
+        :param args: Only filter frequency/frequencies can be specified
+            as argument(s). Alternatively filter frequencies can be specified
+            as keyword arguments.
+        :param options: Keyword arguments for the respective filter
             that will be passed on. (e.g. ``freqmin=1.0``, ``freqmax=20.0`` for
             ``"bandpass"``)
 
@@ -2116,7 +2251,7 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
             st.plot()
         """
         for tr in self:
-            tr.filter(type, **options)
+            tr.filter(type, *args, **options)
         return self
 
     def trigger(self, type, **options):
@@ -2164,6 +2299,14 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
             Computes the carl_sta_trig characteristic function (uses
             :func:`obspy.signal.trigger.carl_sta_trig`).
 
+        ``'energyratio'``
+            Computes the energy ratio characteristic function (uses
+            :func:`obspy.signal.trigger.energy_ratio`).
+
+        ``'modifiedenergyratio'``
+            Computes the modified energy ratio characteristic function (uses
+            :func:`obspy.signal.trigger.modified_energy_ratio`).
+
         ``'zdetect'``
             Z-detector (uses :func:`obspy.signal.trigger.z_detect`).
 
@@ -2191,16 +2334,17 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
             tr.trigger(type, **options)
         return self
 
-    def resample(self, sampling_rate, window='hanning', no_filter=True,
+    def resample(self, sampling_rate, window='hann', no_filter=True,
                  strict_length=False):
         """
         Resample data in all traces of stream using Fourier method.
 
         :type sampling_rate: float
         :param sampling_rate: The sampling rate of the resampled signal.
-        :type window: array_like, callable, str, float, or tuple, optional
+        :type window: :class:`numpy.ndarray`, callable, str, float, or tuple,
+            optional
         :param window: Specifies the window applied to the signal in the
-            Fourier domain. Defaults ``'hanning'`` window. See
+            Fourier domain. Defaults ``'hann'`` window. See
             :func:`scipy.signal.resample` for details.
         :type no_filter: bool, optional
         :param no_filter: Deactivates automatic filtering if set to ``True``.
@@ -2247,7 +2391,7 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         BW.RJOB..EHE | 2009-08-24T00:20:03.000000Z ... | 10.0 Hz, 300 samples
         """
         for tr in self:
-            tr.resample(sampling_rate, window=native_str(window),
+            tr.resample(sampling_rate, window=window,
                         no_filter=no_filter, strict_length=strict_length)
         return self
 
@@ -2399,9 +2543,16 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         """
         Remove a trend from all traces.
 
-        For details see the corresponding
+        For details on supported methods and parameters see the corresponding
         :meth:`~obspy.core.trace.Trace.detrend` method of
         :class:`~obspy.core.trace.Trace`.
+
+        .. note::
+
+            This operation is performed in place on the actual data arrays. The
+            raw data will no longer be accessible afterwards. To keep your
+            original data, use :meth:`~obspy.core.stream.Stream.copy` to create
+            a copy of your stream object.
         """
         for tr in self:
             tr.detrend(type=type, **options)
@@ -2617,6 +2768,38 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         >>> st.rotate(method="->ZNE", inventory=inv)  # doctest: +ELLIPSIS
         <obspy.core.stream.Stream object at 0x...>
         """
+        # check if we have a mix of multiple SEED ID groups that need to be
+        # handled separately
+        seed_id_groups = {}
+        for tr in self:
+            net = tr.stats.network
+            sta = tr.stats.station
+            loc = tr.stats.location
+            cha = tr.stats.channel
+            if not len(cha):
+                msg = "Channel code must be at least one character long."
+                raise ValueError(msg)
+            comp = cha[-1]
+            cha_prefix = cha[:-1]
+            seed_id_groups[(net, sta, loc, cha_prefix)] = None
+        # recursively rotate each set of matching SEED IDs if needed
+        if len(seed_id_groups) > 1:
+            new_traces = []
+            for net, sta, loc, cha_prefix in seed_id_groups:
+                st = Stream()
+                for tr in self:
+                    if (tr.stats.network == net and tr.stats.station == sta and
+                            tr.stats.location == loc and
+                            tr.stats.channel[:-1] == cha_prefix):
+                        st += tr
+                st.rotate(method, back_azimuth=back_azimuth,
+                          inclination=inclination, inventory=inventory,
+                          **kwargs)
+                new_traces.extend(st.traces)
+            self.traces = new_traces
+            return self
+
+        # if working on a single SEED ID group just do the requested rotation
         if method == "->ZNE":
             if inventory is None:
                 msg = ("With method '->ZNE' station metadata has to be "
@@ -2640,19 +2823,6 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         # Split to get the components. No need for further checks for the
         # method as invalid methods will be caught by previous conditional.
         input_components, output_components = method.split("->")
-        # Figure out inclination and back-azimuth.
-        if back_azimuth is None:
-            try:
-                back_azimuth = self[0].stats.back_azimuth
-            except Exception:
-                msg = "No back-azimuth specified."
-                raise TypeError(msg)
-        if len(input_components) == 3 and inclination is None:
-            try:
-                inclination = self[0].stats.inclination
-            except Exception:
-                msg = "No inclination specified."
-                raise TypeError(msg)
         # Do one of the two-component rotations.
         if len(input_components) == 2:
             input_1 = self.select(component=input_components[0])
@@ -2666,7 +2836,15 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
                     msg = "All components need to have the same time span."
                     raise ValueError(msg)
             for i_1, i_2 in zip(input_1, input_2):
-                output_1, output_2 = func(i_1.data, i_2.data, back_azimuth)
+                # Figure out back-azimuth.
+                baz = back_azimuth
+                if baz is None:
+                    try:
+                        baz = i_1.stats.back_azimuth
+                    except Exception:
+                        msg = "No back-azimuth specified."
+                        raise TypeError(msg)
+                output_1, output_2 = func(i_1.data, i_2.data, baz)
                 i_1.data = output_1
                 i_2.data = output_2
                 # Rename the components.
@@ -2676,7 +2854,7 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
                     output_components[1]
                 # Add the azimuth and inclination to the stats object.
                 for comp in (i_1, i_2):
-                    comp.stats.back_azimuth = back_azimuth
+                    comp.stats.back_azimuth = baz
         # Do one of the three-component rotations.
         else:
             input_1 = self.select(component=input_components[0])
@@ -2695,8 +2873,23 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
                     msg = "All components need to have the same time span."
                     raise ValueError(msg)
             for i_1, i_2, i_3 in zip(input_1, input_2, input_3):
+                # Figure out inclination and back-azimuth.
+                baz = back_azimuth
+                inc = inclination
+                if baz is None:
+                    try:
+                        baz = i_1.stats.back_azimuth
+                    except Exception:
+                        msg = "No back-azimuth specified."
+                        raise TypeError(msg)
+                if inc is None:
+                    try:
+                        inc = i_1.stats.inclination
+                    except Exception:
+                        msg = "No inclination specified."
+                        raise TypeError(msg)
                 output_1, output_2, output_3 = func(
-                    i_1.data, i_2.data, i_3.data, back_azimuth, inclination)
+                    i_1.data, i_2.data, i_3.data, baz, inc)
                 i_1.data = output_1
                 i_2.data = output_2
                 i_3.data = output_3
@@ -2709,8 +2902,8 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
                     output_components[2]
                 # Add the azimuth and inclination to the stats object.
                 for comp in (i_1, i_2, i_3):
-                    comp.stats.back_azimuth = back_azimuth
-                    comp.stats.inclination = inclination
+                    comp.stats.back_azimuth = baz
+                    comp.stats.inclination = inc
         return self
 
     def copy(self):
@@ -2991,6 +3184,13 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         To subsequently deconvolve the instrument response use
         :meth:`Stream.remove_response`.
 
+        .. note::
+
+            It is recommended to rather just provide the metadata information
+            directly whenever needed so that the lookup of appropriate response
+            is done right at the time when it is used, e.g.
+            ``stream.remove_response(inventory=inv, ...)``
+
         >>> from obspy import read, read_inventory
         >>> st = read()
         >>> inv = read_inventory()
@@ -3088,13 +3288,97 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
             tr.remove_sensitivity(*args, **kwargs)
         return self
 
+    def stack(self, group_by='all', stack_type='linear', npts_tol=0,
+              time_tol=0):
+        """
+        Stack traces by the same selected metadata.
+
+        The metadata of each trace (including starttime) corresponds to the
+        metadata of the original traces if those are the same.
+        Additionaly, the entry ``stack`` is written to the stats object(s).
+        It contains the fields ``group``
+        (result of the format operation on the ``group_by`` parameter),
+        ``count`` (number of stacked traces) and ``type``
+        (``stack_type`` argument).
+
+        :type group_by: str
+        :param group_by: Stack waveforms together which have the same metadata
+            given by this parameter. The parameter should name the
+            corresponding keys of the stats object,
+            e.g. ``'{network}.{station}'`` for stacking all
+            locations and channels of the stations and returning a stream
+            consisting of one stacked trace for each station.
+            This parameter can take two special values,
+            ``'id'`` which stacks the waveforms by SEED id and
+            ``'all'`` (default) which stacks together all traces in the stream.
+        :type stack_type: str or tuple
+        :param stack_type: Type of stack, one of the following:
+            ``'linear'``: average stack (default),
+            ``('pw', order)``: phase weighted stack of given order
+            (see [Schimmel1997]_, order 0 corresponds to linear stack),
+            ``('root', order)``: root stack of given order
+            (order 1 corresponds to linear stack).
+        :type npts_tol: int
+        :param npts_tol: Tolerate traces with different number of points
+            with a difference up to this value. Surplus samples are discarded.
+        :type time_tol: float
+        :param time_tol: Tolerate difference, in seconds, in startime when
+            setting the new starttime of the stack. If starttimes differs more
+            than this value it will be set to timestamp 0.
+
+        >>> from obspy import read
+        >>> st = read()
+        >>> stack = st.stack()
+        >>> print(stack)  # doctest: +ELLIPSIS
+        1 Trace(s) in Stream:
+        BW.RJOB.. | 2009-08-24T00:20:03.000000Z - ... | 100.0 Hz, 3000 samples
+
+        .. note::
+
+            This operation is performed in place on the actual data arrays. The
+            raw data will no longer be accessible afterwards. To keep your
+            original data, use :meth:`~obspy.core.stream.Stream.copy` to create
+            a copy of your stream object.
+        """
+        from obspy.signal.util import stack as stack_func
+        from obspy.core.util.attribdict import _attribdict_equal
+        groups = self._groupby(group_by)
+        stacks = []
+        for groupid, traces in groups.items():
+            header = {k: v for k, v in traces[0].stats.items()
+                      if all(_attribdict_equal(tr.stats.get(k), v)
+                             for tr in traces)}
+            header.pop('endtime', None)
+            if 'sampling_rate' not in header:
+                msg = 'Sampling rate of traces to stack is different'
+                raise ValueError(msg)
+            if 'starttime' not in header and time_tol > 0:
+                times = [tr.stats.starttime for tr in traces]
+                if ptp(times) <= time_tol:
+                    # use high median as starttime
+                    header['starttime'] = sorted(times)[len(times) // 2]
+            header['stack'] = AttribDict(group=groupid, count=len(traces),
+                                         type=stack_type)
+            npts_all = [len(tr) for tr in traces]
+            npts_dif = ptp(npts_all)
+            npts = min(npts_all)
+            if npts_dif > npts_tol:
+                msg = ('Difference of number of points of the traces is higher'
+                       ' than requested tolerance ({} > {})')
+                raise ValueError(msg.format(npts_dif, npts_tol))
+            data = np.array([tr.data[:npts] for tr in traces])
+            stack = stack_func(data, stack_type=stack_type)
+            stacks.append(traces[0].__class__(data=stack, header=header))
+        self.traces = stacks
+        return self
+
     @staticmethod
     def _dummy_stream_from_string(s):
         """
         Helper method to create a dummy Stream object (with data always equal
         to one) from a string representation of the Stream, mostly for
         debugging purposes.
-
+        >>> import os
         >>> s = ['', '', '3 Trace(s) in Stream:',
         ...      'IU.GRFO..HH2 | 2016-01-07T00:00:00.008300Z - '
         ...      '2016-01-07T00:00:30.098300Z | 10.0 Hz, 301 samples',
@@ -3124,7 +3408,7 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
             sampling_rate = float(items[6])
             npts = int(items[8])
             tr = Trace()
-            tr.data = np.ones(npts, dtype=np.float_)
+            tr.data = np.ones(npts, dtype=np.float64)
             tr.stats.station = sta
             tr.stats.network = net
             tr.stats.location = loc
@@ -3182,6 +3466,26 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
                     "channels": channels_}
         return all_channels
 
+    def _groupby(self, group_by):
+        """
+        Group traces by same metadata.
+
+        :param group_by: Group traces together which have the same metadata
+            given by this parameter. The parameter should name the
+            corresponding keys of the stats object,
+            e.g. ``'{network}.{station}'``.
+            This parameter can take the value
+            ``'id'`` which groups the traces by SEED id.
+
+        :return: dictionary {group: stream}
+        """
+        if group_by == 'id':
+            group_by = '{network}.{station}.{location}.{channel}'
+        groups = collections.defaultdict(self.__class__)
+        for tr in self:
+            groups[group_by.format(**tr.stats)].append(tr)
+        return dict(groups)
+
     def _trim_common_channels(self):
         """
         Trim all channels that have the same ID down to the component character
@@ -3214,15 +3518,23 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         :type inventory: :class:`~obspy.core.inventory.inventory.Inventory` or
             :class:`~obspy.io.xseed.parser.Parser`
         :param inventory: Inventory or Parser with metadata of channels.
-        :type components: list or tuple
+        :type components: list or tuple or str
         :param components: List of combinations of three (case sensitive)
             component characters. Rotations are executed in this order, so
             order might matter in very strange cases (e.g. if traces with more
             than three component codes are present for the same SEED ID down to
             the component code). For example, specifying components ``"Z12"``
             would rotate sets of "BHZ", "BH1", "BH2" (and "HHZ", "HH1", "HH2",
-            etc.) channels at the same station.
+            etc.) channels at the same station. If only a single set of
+            component codes is used, this option can also be specified as a
+            string (e.g. ``components='Z12'``).
         """
+        # be nice to users that specify e.g. ``components='ZNE'``..
+        # compare http://lists.swapbytes.de/archives/obspy-users/
+        # 2018-March/002692.html
+        if isinstance(components, str):
+            components = [components]
+
         for component_pair in components:
             st = self.select(component="[{}]".format(component_pair))
             netstaloc = sorted(set(
@@ -3333,6 +3645,17 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
             self.traces += traces
         return self
 
+    def newbyteorder(self, byteorder='native'):
+        """
+        Change byteorder of the data
+
+        For details see
+        :meth:`Trace.newbyteorder <obspy.core.trace.Trace.newbyteorder>`.
+        """
+        for tr in self:
+            tr.newbyteorder(byteorder)
+        return self
+
 
 def _is_pickle(filename):  # @UnusedVariable
     """
@@ -3348,10 +3671,15 @@ def _is_pickle(filename):  # @UnusedVariable
     >>> _is_pickle('/path/to/pickle.file')  # doctest: +SKIP
     True
     """
-    if isinstance(filename, (str, native_str)):
+    if isinstance(filename, str):
         try:
             with open(filename, 'rb') as fp:
-                st = pickle.load(fp)
+                if b"obspy.core.stream" in fp.read(100):
+                    fp.seek(0)
+                    st = pickle.load(fp)
+                    return True
+                else:
+                    return False
         except Exception:
             return False
     else:
@@ -3376,14 +3704,13 @@ def _read_pickle(filename, **kwargs):  # @UnusedVariable
     :return: A ObsPy Stream object.
     """
     kwargs = {}
-    if PY3:
-        # see seishub/client.py
-        # https://api.mongodb.org/python/current/\
-        # python3.html#why-can-t-i-share-pickled-objectids-\
-        # between-some-versions-of-python-2-and-3
-        kwargs['encoding'] = "latin-1"
+    # see seishub/client.py
+    # https://api.mongodb.org/python/current/\
+    # python3.html#why-can-t-i-share-pickled-objectids-\
+    # between-some-versions-of-python-2-and-3
+    kwargs['encoding'] = "latin-1"
 
-    if isinstance(filename, (str, native_str)):
+    if isinstance(filename, str):
         with open(filename, 'rb') as fp:
             return pickle.load(fp, **kwargs)
     else:
@@ -3410,7 +3737,7 @@ def _write_pickle(stream, filename, protocol=2, **kwargs):  # @UnusedVariable
     :type protocol: int, optional
     :param protocol: Pickle protocol, defaults to ``2``.
     """
-    if isinstance(filename, (str, native_str)):
+    if isinstance(filename, str):
         with open(filename, 'wb') as fp:
             pickle.dump(stream, fp, protocol=protocol)
     else:

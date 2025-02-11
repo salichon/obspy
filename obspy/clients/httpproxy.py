@@ -10,17 +10,10 @@ License:
 J. MacCarthy, modified from https://gist.github.com/frxstrem/4487802
 
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-from future import standard_library
-from future.utils import native_str
-
-from base64 import b64encode
 import socket
-with standard_library.hooks():
-    from urllib.request import getproxies
-    from urllib.parse import urlparse
+from base64 import b64encode
+from urllib.request import getproxies
+from urllib.parse import urlparse
 
 
 def get_proxy_tuple():
@@ -41,12 +34,12 @@ def valid_address(addr):
     """ Verify that an IP/port tuple is valid """
     is_valid = (isinstance(addr, (list, tuple)) and
                 len(addr) == 2 and
-                isinstance(addr[0], (str, native_str)) and
+                isinstance(addr[0], str) and
                 isinstance(addr[1], int))
     return is_valid
 
 
-def http_proxy_connect(address, proxy, auth=None):
+def http_proxy_connect(address, proxy, auth=None, timeout=None):
     """
     Establish a socket connection through an HTTP proxy.
 
@@ -83,6 +76,8 @@ def http_proxy_connect(address, proxy, auth=None):
             raise ValueError('Invalid authentication specification')
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if timeout is not None:
+        s.settimeout(timeout)
     s.connect(proxy)
     fp = s.makefile('rw')
 

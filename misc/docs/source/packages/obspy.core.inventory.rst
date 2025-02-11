@@ -1,3 +1,5 @@
+:orphan:
+
 .. currentmodule:: obspy.core.inventory
 .. automodule:: obspy.core.inventory
 
@@ -9,7 +11,7 @@
        :toctree: autogen
        :nosignatures:
 
-       inventory.read_inventory
+       ~inventory.read_inventory
 
     .. comment to end block
 

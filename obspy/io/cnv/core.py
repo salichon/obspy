@@ -8,10 +8,6 @@ CNV file format support for ObsPy
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA @UnusedWildImport
-
 from bisect import bisect_right
 import warnings
 
@@ -30,16 +26,17 @@ def _write_cnv(catalog, filename, phase_mapping=None, ifx_list=None,
     :type catalog: :class:`~obspy.core.event.Catalog`
     :param catalog: Input catalog for CNV output..
     :type filename: str or file
-    :param filename: Filename to write or open file-like object.
+    :param filename: Filename to write or open file-like object
     :type phase_mapping: dict
     :param phase_mapping: Mapping of phase hints to "P" or "S". CNV format only
         uses a single letter phase code (either "P" or "S"). If not specified
         the following default mapping is used: 'p', 'P', 'Pg', 'Pn', 'Pm' will
         be mapped to "P" and 's', 'S', 'Sg', 'Sn', 'Sm' will be mapped to "S".
-    :type ifx_list: list of :class:`~obspy.core.event.ResourceIdentifier`
+    :type ifx_list: list of
+        :class:`~obspy.core.event.resourceid.ResourceIdentifier`
     :param ifx_list: List of events for which the 'IFX' flag should be set
         (used in VELEST to fix the y coordinate of the hypocenter).
-    :type weight_mapping: list of float
+    :type weight_mapping: list[float]]
     :param weight_mapping: Mapping of pick uncertainties to integer weights.
         (Sorted) list of floats of boundary uncertainties. If uncertainty of
         pick is lower than the first entry of the list than a weight of 0 is
@@ -60,7 +57,8 @@ def _write_cnv(catalog, filename, phase_mapping=None, ifx_list=None,
                          's': "S", 'S': "S", 'Sg': "S", 'Sn': "S", 'Sm': "S"}
     else:
         values = set(phase_mapping.values())
-        if values.update(("P", "S")) != set(("P", "S")):
+        values.update(("P", "S"))
+        if values != set(("P", "S")):
             msg = ("Values of phase mapping should only be 'P' or 'S'")
             raise ValueError(msg)
     if ifx_list is None:

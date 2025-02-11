@@ -32,9 +32,10 @@ Examples files may be retrieved via https://examples.obspy.org.
 BW.RJOB..EHZ | 2009-08-24T00:20:03.000000Z - ... | 100.0 Hz, 3000 samples
 BW.RJOB..EHN | 2009-08-24T00:20:03.000000Z - ... | 100.0 Hz, 3000 samples
 BW.RJOB..EHE | 2009-08-24T00:20:03.000000Z - ... | 100.0 Hz, 3000 samples
->>> st.plot(color='gray', tick_format='%I:%M %p',
+>>> st.plot(color='gray', tick_format='%I:%M %p',  # doctest: +ELLIPSIS
 ...         starttime=st[0].stats.starttime,
 ...         endtime=st[0].stats.starttime+20)
+<...Figure ...>
 
 .. plot::
 
@@ -54,7 +55,7 @@ size of 4096 points. For more info see
 
 >>> from obspy import read
 >>> st = read()
->>> st[0].spectrogram(log=True) #doctest: +SKIP
+>>> st[0].spectrogram(log=True)  # doctest: +SKIP
 
 .. plot::
 
@@ -90,7 +91,7 @@ Draws a beach ball diagram of an earthquake focal mechanism.
 
     respectively.
 
-.. _`Generic Mapping Tools (GMT)`: https://gmt.soest.hawaii.edu
+.. _`Generic Mapping Tools (GMT)`: https://www.generic-mapping-tools.org
 .. _`bb.m`: http://www.ceri.memphis.edu/people/olboyd/Software/Software.html
 
 
@@ -106,8 +107,7 @@ Draws a beach ball diagram of an earthquake focal mechanism.
 
     >>> from obspy.imaging.beachball import beachball
     >>> np1 = [150, 87, 1]
-    >>> beachball(np1) #doctest: +ELLIPSIS
-    <matplotlib.figure.Figure object at 0x...>
+    >>> fig = beachball(np1)  # doctest: +ELLIPSIS
 
     .. plot::
 
@@ -125,8 +125,7 @@ Draws a beach ball diagram of an earthquake focal mechanism.
 
     >>> from obspy.imaging.beachball import beachball
     >>> mt = [-2.39, 1.04, 1.35, 0.57, -2.94, -0.94]
-    >>> beachball(mt) #doctest: +ELLIPSIS
-    <matplotlib.figure.Figure object at 0x...>
+    >>> fig = beachball(mt) #doctest: +ELLIPSIS
 
     .. plot::
 
@@ -153,9 +152,9 @@ Draws a beach ball diagram of an earthquake focal mechanism.
     >>> ax.add_collection(beach1) #doctest: +SKIP
     >>> ax.add_collection(beach2) #doctest: +SKIP
     >>> ax.set_aspect("equal")
-    >>> ax.set_xlim((-120, 120))
+    >>> ax.set_xlim((-120, 120))  # doctest: +SKIP
     (-120, 120)
-    >>> ax.set_ylim((-20, 120))
+    >>> ax.set_ylim((-20, 120))  # doctest: +SKIP
     (-20, 120)
 
     .. plot::
@@ -191,10 +190,6 @@ Common formats are png, svg, pdf or ps.
 >>> st = read()
 >>> st.plot(outfile='graph.png') #doctest: +SKIP
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 # Please do not import any modules using matplotlib - otherwise it will disturb
 # the test suite (running without X11 or any other display)
 # see tests/__init__.py for details

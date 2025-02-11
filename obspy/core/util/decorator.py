@@ -8,24 +8,17 @@ Decorator used in ObsPy.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 import functools
 import inspect
-import os
+from pathlib import Path
 import re
 import socket
 import tarfile
-import threading
-import unittest
 import warnings
 import zipfile
 
 import numpy as np
 from decorator import decorator
-from future.utils import PY2, native_str
 
 from obspy.core.util import get_example_file
 from obspy.core.util.base import NamedTemporaryFile
@@ -49,10 +42,7 @@ def deprecated(warning_msg=None):
             msg = func.__doc__
         elif warning_msg:
             msg = warning_msg
-            if PY2 and inspect.ismethod(func):
-                func.im_func.__doc__ = warning_msg
-            else:
-                func.__doc__ = warning_msg
+            func.__doc__ = warning_msg
         else:
             msg = "Call to deprecated function %s." % func.__name__
         warnings.warn(msg, category=ObsPyDeprecationWarning, stacklevel=3)
@@ -98,7 +88,7 @@ def deprecated_keywords(keywords):
                          if new_key == key_])
                     raise Exception(msg3 % (conflicting_keys, fname, new_key))
             # map deprecated keywords to new keywords
-            for kw in kwargs.keys():
+            for kw in list(kwargs):
                 if kw in keywords:
                     nkw = keywords[kw]
                     if nkw is None:
@@ -110,7 +100,7 @@ def deprecated_keywords(keywords):
                                       category=ObsPyDeprecationWarning,
                                       stacklevel=3)
                         kwargs[nkw] = kwargs[kw]
-                    del(kwargs[kw])
+                    del kwargs[kw]
             return func(*args, **kwargs)
         return echo_func
 
@@ -120,9 +110,11 @@ def deprecated_keywords(keywords):
 @decorator
 def skip_on_network_error(func, *args, **kwargs):
     """
-    Decorator for unittest to mark test routines that fail with certain network
+    Decorator to mark test routines that fail with certain network
     errors (e.g. timeouts) as "skipped" rather than "Error".
     """
+    import pytest  # NOQA
+
     try:
         return func(*args, **kwargs)
     ###################################################
@@ -130,13 +122,13 @@ def skip_on_network_error(func, *args, **kwargs):
     # network errors that should be skipped
     except socket.timeout as e:
         if str(e) == "timed out":
-            raise unittest.SkipTest(str(e))
+            pytest.skip(str(e))
     ###################################################
     except socket.error as e:
         if str(e) == "[Errno 110] Connection timed out":
-            raise unittest.SkipTest(str(e))
+            pytest.skip(str(e))
     # general except to be able to generally reraise
-    except Exception as e:
+    except Exception:
         raise
 
 
@@ -145,11 +137,11 @@ def uncompress_file(func, filename, *args, **kwargs):
     """
     Decorator used for temporary uncompressing file if .gz or .bz2 archive.
     """
-    if not kwargs.get('check_compression', True):
+    if not kwargs.pop('check_compression', True):
         return func(filename, *args, **kwargs)
-    if not isinstance(filename, (str, native_str)):
+    if not isinstance(filename, str):
         return func(filename, *args, **kwargs)
-    elif not os.path.exists(filename):
+    elif not Path(filename).exists():
         msg = "File not found '%s'" % (filename)
         raise IOError(msg)
     # check if we got a compressed file or archive
@@ -173,8 +165,14 @@ def uncompress_file(func, filename, *args, **kwargs):
             pass
     elif zipfile.is_zipfile(filename):
         try:
-            zip = zipfile.ZipFile(filename)
-            obj_list = [zip.read(name) for name in zip.namelist()]
+            with zipfile.ZipFile(filename) as zip:
+                if b'obspy_no_uncompress' in zip.comment:
+                    # be nice to plugins based on zip format
+                    # do not uncompress the file if tag is present
+                    # see issue #3192
+                    obj_list = None
+                else:
+                    obj_list = [zip.read(name) for name in zip.namelist()]
         except Exception:
             pass
     elif filename.endswith('.bz2'):
@@ -265,7 +263,7 @@ def map_example_filename(arg_kwarg_name):
         prefix = '/path/to/'
         # check kwargs
         if arg_kwarg_name in kwargs:
-            if isinstance(kwargs[arg_kwarg_name], (str, native_str)):
+            if isinstance(kwargs[arg_kwarg_name], str):
                 if re.match(prefix, kwargs[arg_kwarg_name]):
                     try:
                         kwargs[arg_kwarg_name] = \
@@ -287,8 +285,7 @@ def map_example_filename(arg_kwarg_name):
             except ValueError:
                 pass
             else:
-                if ind < len(args) and isinstance(args[ind], (str,
-                                                              native_str)):
+                if ind < len(args) and isinstance(args[ind], str):
                     # need to check length of args from inspect
                     if re.match(prefix, args[ind]):
                         try:
@@ -300,40 +297,6 @@ def map_example_filename(arg_kwarg_name):
                             pass
         return func(*args, **kwargs)
     return _map_example_filename
-
-
-def _decorate_polyfill(func, caller):
-    """
-    decorate(func, caller) decorates a function using a caller.
-    """
-    try:
-        from decorator import decorate
-        return decorate(func, caller)
-    except ImportError:
-        from decorator import FunctionMaker
-        evaldict = dict(_call_=caller, _func_=func)
-        fun = FunctionMaker.create(
-            func, "return _call_(_func_, %(shortsignature)s)",
-            evaldict, __wrapped__=func)
-        if hasattr(func, '__qualname__'):
-            fun.__qualname__ = func.__qualname__
-        return fun
-
-
-def rlock(func):
-    """
-    Place a threading recursive lock (Rlock) on the wrapped function.
-    """
-    # This lock will be instantiated at function creation time, i.e. at the
-    # time the Python interpreter sees the decorated function the very
-    # first time - this lock thus exists once for each decorated function.
-    _rlock = threading.RLock()
-
-    def _locked_f(f, *args, **kwargs):
-        with _rlock:
-            return func(*args, **kwargs)
-
-    return _decorate_polyfill(func, _locked_f)
 
 
 if __name__ == '__main__':

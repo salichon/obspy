@@ -9,21 +9,19 @@ Classes related to instrument responses.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 import copy
-import ctypes as C
-import warnings
-from collections import defaultdict, Iterable
+import ctypes as C  # NOQA
+import collections.abc
+from collections import defaultdict
 from copy import deepcopy
+import itertools
 from math import pi
+import warnings
 
 import numpy as np
-import scipy.interpolate
 
 from obspy.core.util.base import ComparingObject
+from obspy.core.util.deprecation_helpers import ObsPyDeprecationWarning
 from obspy.core.util.obspy_types import (ComplexWithUncertainties,
                                          FloatWithUncertainties,
                                          FloatWithUncertaintiesAndUnit,
@@ -201,9 +199,9 @@ class PolesZerosResponseStage(ResponseStage):
     :type normalization_frequency: float
     :param normalization_frequency: The frequency at which the normalization
         factor is normalized.
-    :type zeros: list of complex
+    :type zeros: list[complex]
     :param zeros: All zeros of the stage.
-    :type poles: list of complex
+    :type poles: list[complex]
     :param poles: All poles of the stage.
     :type normalization_factor: float, optional
     :param normalization_factor:
@@ -321,6 +319,35 @@ class PolesZerosResponseStage(ResponseStage):
         else:
             raise ValueError(msg)
 
+    def to_radians_per_second(self):
+        """
+        Convert to type 'LAPLACE (RADIANS/SECOND)'
+        """
+        if self.pz_transfer_function_type == 'LAPLACE (RADIANS/SECOND)':
+            return
+        elif self.pz_transfer_function_type == 'LAPLACE (HERTZ)':
+            twopi = 2 * pi
+            self.normalization_factor *= twopi ** (
+                len(self.poles) - len(self.zeros))
+            self.poles = [
+                ComplexWithUncertainties(
+                    x.real * twopi, x.imag * twopi,
+                    upper_uncertainty=x.upper_uncertainty * twopi,
+                    lower_uncertainty=x.lower_uncertainty * twopi)
+                for x in self.poles]
+            self.zeros = [
+                ComplexWithUncertainties(
+                    x.real * twopi, x.imag * twopi,
+                    upper_uncertainty=x.upper_uncertainty * twopi,
+                    lower_uncertainty=x.lower_uncertainty * twopi)
+                for x in self.zeros]
+            self.pz_transfer_function_type = 'LAPLACE (RADIANS/SECOND)'
+        else:
+            msg = (f"Can not convert transfer function type "
+                   f"'{self.pz_transfer_function_type}' to "
+                   f"'LAPLACE (RADIANS/SECOND)'")
+            raise ValueError(msg)
+
 
 class CoefficientsTypeResponseStage(ResponseStage):
     """
@@ -342,10 +369,10 @@ class CoefficientsTypeResponseStage(ResponseStage):
 
         The function tries to match inputs to one of three types if it can.
     :type numerator: list of
-        :class:`~obspy.core.util.obspy_types.FloatWithUncertaintiesAndUnit`
+        :class:`~obspy.core.inventory.response.CoefficientWithUncertainties`
     :param numerator: Numerator of the coefficient response stage.
     :type denominator: list of
-        :class:`~obspy.core.util.obspy_types.FloatWithUncertaintiesAndUnit`
+        :class:`~obspy.core.inventory.response.CoefficientWithUncertainties`
     :param denominator: Denominator of the coefficient response stage.
     """
     def __init__(self, stage_sequence_number, stage_gain,
@@ -401,10 +428,14 @@ class CoefficientsTypeResponseStage(ResponseStage):
         if value == []:
             self._numerator = []
             return
-        value = list(value) if isinstance(value, Iterable) else [value]
+        value = list(value) if isinstance(
+            value, collections.abc.Iterable) else [value]
+        if any(getattr(x, 'unit', None) is not None for x in value):
+            msg = 'Setting Numerator/Denominator with a unit is deprecated.'
+            warnings.warn(msg, ObsPyDeprecationWarning)
         for _i, x in enumerate(value):
-            if not isinstance(x, FloatWithUncertaintiesAndUnit):
-                value[_i] = FloatWithUncertaintiesAndUnit(x)
+            if not isinstance(x, CoefficientWithUncertainties):
+                value[_i] = CoefficientWithUncertainties(x)
         self._numerator = value
 
     @property
@@ -416,10 +447,14 @@ class CoefficientsTypeResponseStage(ResponseStage):
         if value == []:
             self._denominator = []
             return
-        value = list(value) if isinstance(value, Iterable) else [value]
+        value = list(value) if isinstance(
+            value, collections.abc.Iterable) else [value]
+        if any(getattr(x, 'unit', None) is not None for x in value):
+            msg = 'Setting Numerator/Denominator with a unit is deprecated.'
+            warnings.warn(msg, ObsPyDeprecationWarning)
         for _i, x in enumerate(value):
-            if not isinstance(x, FloatWithUncertaintiesAndUnit):
-                value[_i] = FloatWithUncertaintiesAndUnit(x)
+            if not isinstance(x, CoefficientWithUncertainties):
+                value[_i] = CoefficientWithUncertainties(x)
         self._denominator = value
 
     @property
@@ -557,7 +592,7 @@ class FIRResponseStage(ResponseStage):
             * ``EVEN``
             * ``ODD``
 
-    :type coefficients: list of floats
+    :type coefficients: list[float]
     :param coefficients: List of FIR coefficients.
     """
     def __init__(self, stage_sequence_number, stage_gain,
@@ -639,7 +674,7 @@ class PolynomialResponseStage(ResponseStage):
     :param approximation_upper_bound: Upper bound of approximation.
     :type maximum_error: float
     :param maximum_error: Maximum error.
-    :type coefficients: list of floats
+    :type coefficients: list[float]
     :param coefficients: List of polynomial coefficients.
     """
     def __init__(self, stage_sequence_number, stage_gain,
@@ -654,6 +689,8 @@ class PolynomialResponseStage(ResponseStage):
                  decimation_input_sample_rate=None, decimation_factor=None,
                  decimation_offset=None, decimation_delay=None,
                  decimation_correction=None):
+        # XXX remove stage_gain and stage_gain_frequency completely, since
+        # changes in StationXML 1.1?
         self._approximation_type = approximation_type
         self.frequency_lower_bound = frequency_lower_bound
         self.frequency_upper_bound = frequency_upper_bound
@@ -661,6 +698,9 @@ class PolynomialResponseStage(ResponseStage):
         self.approximation_upper_bound = approximation_upper_bound
         self.maximum_error = maximum_error
         self.coefficients = coefficients
+        # XXX StationXML 1.1 does not allow stage gain in Polynomial response
+        # stages. Maybe we should we warn here.. but this could get very
+        # verbose when reading StationXML 1.0 files, so maybe not
         super(PolynomialResponseStage, self).__init__(
             stage_sequence_number=stage_sequence_number,
             input_units=input_units,
@@ -767,6 +807,196 @@ class Response(ComparingObject):
             msg = "response_stages must be an iterable."
             raise ValueError(msg)
 
+    def _attempt_to_fix_units(self):
+        """
+        Internal helper function that will add units to gain only stages based
+        on the units of surrounding stages.
+
+        Should be called when parsing from file formats that don't have units
+        for identity stages.
+        """
+        previous_output_units = None
+        previous_output_units_description = None
+
+        # Potentially set the input units of the first stage to the units of
+        # the overall sensitivity and the output units of the second stage.
+        if self.response_stages and self.response_stages[0] and \
+                hasattr(self, "instrument_sensitivity"):
+            s = self.instrument_sensitivity
+
+            if s:
+                if self.response_stages[0].input_units is None:
+                    self.response_stages[0].input_units = s.input_units
+                if self.response_stages[0].input_units_description is None:
+                    self.response_stages[0].input_units_description = \
+                        s.input_units_description
+
+            if len(self.response_stages) >= 2 and self.response_stages[1]:
+                if self.response_stages[0].output_units is None:
+                    self.response_stages[0].output_units = \
+                        self.response_stages[1].input_units
+                if self.response_stages[0].output_units_description is None:
+                    self.response_stages[0].output_units_description = \
+                        self.response_stages[1].input_units_description
+
+        # Front to back.
+        for r in self.response_stages:
+            # Only for identity/stage only.
+            if type(r) is ResponseStage:
+                if not r.input_units and not r.output_units and \
+                        previous_output_units:
+                    r.input_units = previous_output_units
+                    r.output_units = previous_output_units
+                if not r.input_units_description and \
+                        not r.output_units_description \
+                        and previous_output_units_description:
+                    r.input_units_description = \
+                        previous_output_units_description
+                    r.output_units_description = \
+                        previous_output_units_description
+
+            previous_output_units = r.output_units
+            previous_output_units_description = r.output_units_description
+
+        # Back to front.
+        previous_input_units = None
+        previous_input_units_description = None
+        for r in reversed(self.response_stages):
+            # Only for identity/stage only.
+            if type(r) is ResponseStage:
+                if not r.input_units and not r.output_units and \
+                        previous_input_units:
+                    r.input_units = previous_input_units
+                    r.output_units = previous_input_units
+                if not r.input_units_description and \
+                        not r.output_units_description \
+                        and previous_input_units_description:
+                    r.input_units_description = \
+                        previous_input_units_description
+                    r.output_units_description = \
+                        previous_input_units_description
+
+            previous_input_units = r.input_units
+            previous_input_units_description = r.input_units_description
+
+    def get_sampling_rates(self):
+        """
+        Computes the input and output sampling rates of each stage.
+
+        For well defined files this will just read the decimation attributes
+        of each stage. For others it will attempt to infer missing values
+        from the surrounding stages.
+
+        :returns: A nested dictionary detailing the sampling rates of each
+            response stage.
+        :rtype: dict
+
+        >>> import obspy
+        >>> inv = obspy.read_inventory("AU.MEEK.xml")  # doctest: +SKIP
+        >>> inv[0][0][0].response.get_sampling_rates()  # doctest: +SKIP
+        {1: {'decimation_factor': 1,
+             'input_sampling_rate': 600.0,
+             'output_sampling_rate': 600.0},
+         2: {'decimation_factor': 1,
+             'input_sampling_rate': 600.0,
+             'output_sampling_rate': 600.0},
+         3: {'decimation_factor': 1,
+             'input_sampling_rate': 600.0,
+             'output_sampling_rate': 600.0},
+         4: {'decimation_factor': 3,
+             'input_sampling_rate': 600.0,
+             'output_sampling_rate': 200.0},
+         5: {'decimation_factor': 10,
+             'input_sampling_rate': 200.0,
+             'output_sampling_rate': 20.0}}
+        """
+        # Get all stages, but skip stage 0.
+        stages = [_i.stage_sequence_number for _i in self.response_stages
+                  if _i.stage_sequence_number]
+        if not stages:
+            return {}
+
+        if list(range(1, len(stages) + 1)) != stages:
+            raise ValueError("Can only determine sampling rates if response "
+                             "stages are in order.")
+
+        # First fill in all the set values.
+        sampling_rates = {}
+        for stage in self.response_stages:
+            input_sr = None
+            output_sr = None
+            factor = None
+            if stage.decimation_input_sample_rate:
+                input_sr = stage.decimation_input_sample_rate
+                if stage.decimation_factor:
+                    factor = stage.decimation_factor
+                    output_sr = input_sr / float(factor)
+            sampling_rates[stage.stage_sequence_number] = {
+                "input_sampling_rate": input_sr,
+                "output_sampling_rate": output_sr,
+                "decimation_factor": factor}
+
+        # Nothing might be set - just return in that case.
+        if set(itertools.chain.from_iterable(v.values()
+               for v in sampling_rates.values())) == {None}:
+            return sampling_rates
+
+        # Find the first set input sampling rate. The output sampling rate
+        # cannot be set without it. Set all prior input and output sampling
+        # rates to it.
+        for i in stages:
+            sr = sampling_rates[i]["input_sampling_rate"]
+            if sr:
+                for j in range(1, i):
+                    sampling_rates[j]["input_sampling_rate"] = sr
+                    sampling_rates[j]["output_sampling_rate"] = sr
+                    sampling_rates[j]["decimation_factor"] = 1
+                break
+
+        # This should guarantee that the input and output sampling rate of the
+        # the first stage are set.
+        output_sr = sampling_rates[1]["output_sampling_rate"]
+        if not output_sr:  # pragma: no cover
+            raise NotImplementedError
+
+        for i in stages:
+            si = sampling_rates[i]
+            if not si["input_sampling_rate"]:
+                si["input_sampling_rate"] = output_sr
+            if not si["output_sampling_rate"]:
+                if not si["decimation_factor"]:
+                    si["output_sampling_rate"] = si["input_sampling_rate"]
+                    si["decimation_factor"] = 1
+                else:
+                    si["output_sampling_rate"] = si["input_sampling_rate"] / \
+                        float(si["decimation_factor"])
+            if not si["decimation_factor"]:
+                si["decimation_factor"] = int(round(
+                    si["input_sampling_rate"] / si["output_sampling_rate"]))
+            output_sr = si["output_sampling_rate"]
+
+        def is_close(a, b):
+            return abs(a - b) < 1e-5
+
+        # Final consistency checks.
+        sr = sampling_rates[stages[0]]["input_sampling_rate"]
+        for i in stages:
+            si = sampling_rates[i]
+            if not is_close(si["input_sampling_rate"], sr):  # pragma: no cover
+                msg = ("Input sampling rate of stage %i is inconsistent "
+                       "with the previous stages' output sampling rate")
+                warnings.warn(msg % i)
+
+            if not is_close(
+                    si["input_sampling_rate"] / si["output_sampling_rate"],
+                    si["decimation_factor"]):  # pragma: no cover
+                msg = ("Decimation factor in stage %i is inconsistent with "
+                       "input and output sampling rates.")
+                warnings.warn(msg % i)
+            sr = si["output_sampling_rate"]
+
+        return sampling_rates
+
     def recalculate_overall_sensitivity(self, frequency=None):
         """
         Recalculates the overall sensitivity.
@@ -791,15 +1021,20 @@ class Response(ComparingObject):
             "VEL": ["M/S", "M/SEC"],
             "ACC": ["M/S**2", "M/(S**2)", "M/SEC**2", "M/(SEC**2)",
                     "M/S/S"]}
-        unit = None
+
         for key, value in unit_map.items():
             if i_u and i_u.upper() in value:
                 unit = key
-        if not unit:
-            msg = ("ObsPy does not know how to map unit '%s' to "
-                   "displacement, velocity, or acceleration - overall "
-                   "sensitivity will not be recalculated.") % i_u
-            raise ValueError(msg)
+                break
+        else:
+            unit = "DEF"
+            msg = (f"ObsPy can not map unit '{i_u}' to "
+                   f"displacement, velocity, or acceleration - "
+                   f"evalresp should still work and just use the response as "
+                   f"is. This might not be covered by tests, though, so "
+                   f"proceed with caution and report any unexpected "
+                   f"behavior.")
+            warnings.warn(msg)
 
         # Determine frequency if not given.
         if frequency is None:
@@ -837,7 +1072,7 @@ class Response(ComparingObject):
             raise ValueError(msg)
 
         freq, gain = self._get_overall_sensitivity_and_gain(
-            output=unit, frequency=frequency)
+            output=unit, frequency=float(frequency))
 
         self.instrument_sensitivity.value = gain
         self.instrument_sensitivity.frequency = freq
@@ -859,6 +1094,12 @@ class Response(ComparingObject):
                 velocity, output unit is meters/second
             ``"ACC"``
                 acceleration, output unit is meters/second**2
+            ``"DEF"``
+                default units, the response is calculated in
+                output units/input units (last stage/first stage).
+                Useful if the units for a particular type of sensor (e.g., a
+                pressure sensor) cannot be converted to displacement, velocity
+                or acceleration.
 
         :type frequency: float
         :param frequency: Frequency to calculate overall sensitivity for in
@@ -870,6 +1111,7 @@ class Response(ComparingObject):
             # XXX is this safe enough, or should we lookup the stage sequence
             # XXX number explicitly?
             frequency = self.response_stages[0].normalization_frequency
+        self.instrument_sensitivity.frequency = float(frequency)
         response_at_frequency = self._call_eval_resp_for_frequencies(
             frequencies=[frequency], output=output,
             hide_sensitivity_mismatch_warning=True)[0][0]
@@ -884,7 +1126,7 @@ class Response(ComparingObject):
 
         Also returns the overall sensitivity frequency and its gain.
 
-        :type frequencies: list of float
+        :type frequencies: list[float]
         :param frequencies: Discrete frequencies to calculate response for.
         :type output: str
         :param output: Output units. One of:
@@ -895,6 +1137,12 @@ class Response(ComparingObject):
                 velocity, output unit is meters/second
             ``"ACC"``
                 acceleration, output unit is meters/second**2
+            ``"DEF"``
+                default units, the response is calculated in
+                output units/input units (last stage/first stage).
+                Useful if the units for a particular type of sensor (e.g., a
+                pressure sensor) cannot be converted to displacement, velocity
+                or acceleration.
 
         :type start_stage: int, optional
         :param start_stage: Stage sequence number of first stage that will be
@@ -905,7 +1153,7 @@ class Response(ComparingObject):
         :type hide_sensitivity_mismatch_warning: bool
         :param hide_sensitivity_mismatch_warning: Hide the evalresp warning
             that computed and reported sensitivities don't match.
-        :rtype: :tuple: ( :class:`numpy.ndarray`, chan )
+        :rtype: tuple(:class:`numpy.ndarray`, chan)
         :returns: frequency response at requested frequencies
         """
         if not self.response_stages:
@@ -913,20 +1161,17 @@ class Response(ComparingObject):
                    "stages.")
             raise ObsPyException(msg)
 
+        import scipy.interpolate
         import obspy.signal.evrespwrapper as ew
         from obspy.signal.headers import clibevresp
 
         out_units = output.upper()
-        if out_units not in ("DISP", "VEL", "ACC"):
+        if out_units not in ("DISP", "VEL", "ACC", "DEF"):
             msg = ("requested output is '%s' but must be one of 'DISP', 'VEL' "
-                   "or 'ACC'") % output
+                   ", 'ACC' or 'DEF'") % output
             raise ValueError(msg)
 
         frequencies = np.asarray(frequencies)
-
-        # Whacky. Evalresp uses a global variable and uses that to scale the
-        # response if it encounters any unit that is not SI.
-        scale_factor = [1.0]
 
         def get_unit_mapping(key):
             try:
@@ -980,24 +1225,29 @@ class Response(ComparingObject):
                 "MBAR": ew.ENUM_UNITS["PRESSURE"]}
             if key not in units_mapping:
                 if key is not None:
-                    msg = ("The unit '%s' is not known to ObsPy. It will be "
-                           "assumed to be displacement for the calculations. "
-                           "This mostly does the right thing but please "
-                           "proceed with caution.") % key
+                    msg = (f"The unit '{key}' is not known to ObsPy. It will "
+                           f"be passed in to evalresp as 'undefined'. This "
+                           f"should result in evalresp using the response as "
+                           f"is, without adding any integration or "
+                           f"differentiation and the 'output' parameter "
+                           f"(here: '{output}') not having any effect. Please "
+                           f"double check output data.")
                     warnings.warn(msg)
-                value = ew.ENUM_UNITS["DIS"]
+                value = ew.ENUM_UNITS["UNDEF_UNITS"]
             else:
                 value = units_mapping[key]
 
             # Scale factor with the same logic as evalresp.
             if key in ["CM/S**2", "CM/S", "CM/SEC", "CM"]:
-                scale_factor[0] = 1.0E2
+                scale_factor = 1.0E2
             elif key in ["MM/S**2", "MM/S", "MM/SEC", "MM"]:
-                scale_factor[0] = 1.0E3
+                scale_factor = 1.0E3
             elif key in ["NM/S**2", "NM/S", "NM/SEC", "NM"]:
-                scale_factor[0] = 1.0E9
+                scale_factor = 1.0E9
+            else:
+                scale_factor = 1.0
 
-            return value
+            return value, scale_factor
 
         all_stages = defaultdict(list)
 
@@ -1052,6 +1302,15 @@ class Response(ComparingObject):
                         "units of stage 2."
                     warnings.warn(msg)
 
+        # determine the scale factor from the first stage input units
+        # Evalresp (in the old version we still use) uses a whacky global
+        # variable and uses that to scale the response if it encounters any
+        # unit that is not SI but the way we use the library, the functions
+        # that set that global variable never get called, so do the same, just
+        # outside of evalresp for now
+        _, scale_factor = get_unit_mapping(
+            all_stages[stage_list[0]][0].input_units)
+
         for stage_number in stage_list:
             st = ew.Stage()
             st.sequence_no = stage_number
@@ -1061,8 +1320,8 @@ class Response(ComparingObject):
             blockette = all_stages[stage_number][0]
 
             # Write the input and output units.
-            st.input_units = get_unit_mapping(blockette.input_units)
-            st.output_units = get_unit_mapping(blockette.output_units)
+            st.input_units, _ = get_unit_mapping(blockette.input_units)
+            st.output_units, _ = get_unit_mapping(blockette.output_units)
 
             if isinstance(blockette, PolesZerosResponseStage):
                 blkt = ew.Blkt()
@@ -1164,20 +1423,18 @@ class Response(ComparingObject):
                 min_f_avail = min(f)
                 max_f_avail = max(f)
 
-                # Allow interpolation for at most two samples.
-                _d = np.abs(np.diff(f))
-                _d = _d[_d > 0].min() * 2
-                min_f_avail -= _d
-                max_f_avail += _d
-
                 if min_f < min_f_avail or max_f > max_f_avail:
                     msg = (
-                        "Cannot calculate the response as it contains a "
+                        "The response contains a "
                         "response list stage with frequencies only from "
                         "%.4f - %.4f Hz. You are requesting a response from "
-                        "%.4f - %.4f Hz.")
-                    raise ValueError(msg % (min_f_avail, max_f_avail, min_f,
-                                            max_f))
+                        "%.4f - %.4f Hz. The calculated response will contain "
+                        "extrapolation beyond the frequency band constrained "
+                        "by the response list stage. Please consider "
+                        "adjusting 'pre_filt' and/or 'water_level' during "
+                        "response removal accordingly.")
+                    warnings.warn(
+                        msg % (min_f_avail, max_f_avail, min_f, max_f))
 
                 amp = scipy.interpolate.InterpolatedUnivariateSpline(
                     f, amp, k=3)(frequencies)
@@ -1242,6 +1499,39 @@ class Response(ComparingObject):
 
             if blkt is not None:
                 stage_blkts.append(blkt)
+
+            # Evalresp requires FIR and IIR blockettes to have decimation
+            # values. Set the "unit decimation" values in case they are not
+            # set.
+            #
+            # Only set it if there is a stage gain - otherwise evalresp
+            # complains again.
+            if isinstance(blockette, PolesZerosResponseStage) and \
+                    blockette.stage_gain and \
+                    None in set([
+                        blockette.decimation_correction,
+                        blockette.decimation_delay,
+                        blockette.decimation_factor,
+                        blockette.decimation_input_sample_rate,
+                        blockette.decimation_offset]):
+                # Don't modify the original object.
+                blockette = copy.deepcopy(blockette)
+                blockette.decimation_correction = 0.0
+                blockette.decimation_delay = 0.0
+                blockette.decimation_factor = 1
+                blockette.decimation_offset = 0
+                sr = self.get_sampling_rates()
+                if sr and blockette.stage_sequence_number in sr and \
+                        sr[blockette.stage_sequence_number][
+                            "input_sampling_rate"]:
+                    blockette.decimation_input_sample_rate = \
+                        self.get_sampling_rates()[
+                            blockette.stage_sequence_number][
+                            "input_sampling_rate"]
+                # This branch get's large called for responses that only have a
+                # a single stage.
+                else:
+                    blockette.decimation_input_sample_rate = 1.0
 
             # Parse the decimation if is given.
             decimation_values = set([
@@ -1354,8 +1644,10 @@ class Response(ComparingObject):
                 e, m = ew.ENUM_ERROR_CODES[rc]
                 raise e('calc_resp: ' + m)
 
-            # XXX: Check if this is really not needed.
-            # output *= scale_factor[0]
+            # XXX: We currently need to do this outside of evalresp since the
+            # functions evaluating and setting the global scale factor variable
+            # currently never get called
+            output *= scale_factor
 
         finally:
             clibevresp.curr_file.value = None
@@ -1363,11 +1655,12 @@ class Response(ComparingObject):
         return output, chan
 
     def get_evalresp_response_for_frequencies(
-            self, frequencies, output="VEL", start_stage=None, end_stage=None):
+            self, frequencies, output="VEL", start_stage=None, end_stage=None,
+            hide_sensitivity_mismatch_warning=False):
         """
         Returns frequency response for given frequencies using evalresp.
 
-        :type frequencies: list of float
+        :type frequencies: list[float]
         :param frequencies: Discrete frequencies to calculate response for.
         :type output: str
         :param output: Output units. One of:
@@ -1378,6 +1671,12 @@ class Response(ComparingObject):
                 velocity, output unit is meters/second
             ``"ACC"``
                 acceleration, output unit is meters/second**2
+            ``"DEF"``
+                default units, the response is calculated in
+                output units/input units (last stage/first stage).
+                Useful if the units for a particular type of sensor (e.g., a
+                pressure sensor) cannot be converted to displacement, velocity
+                or acceleration.
 
         :type start_stage: int, optional
         :param start_stage: Stage sequence number of first stage that will be
@@ -1385,16 +1684,22 @@ class Response(ComparingObject):
         :type end_stage: int, optional
         :param end_stage: Stage sequence number of last stage that will be
             used (disregarding all later stages).
+        :type hide_sensitivity_mismatch_warning: bool
+        :param hide_sensitivity_mismatch_warning: Hide the evalresp warning
+            that computed and reported sensitivities do not match.
         :rtype: :class:`numpy.ndarray`
         :returns: frequency response at requested frequencies
         """
+        hsmw = hide_sensitivity_mismatch_warning  # PEP8
         output, chan = self._call_eval_resp_for_frequencies(
             frequencies, output=output, start_stage=start_stage,
-            end_stage=end_stage)
+            end_stage=end_stage,
+            hide_sensitivity_mismatch_warning=hsmw)
         return output
 
     def get_evalresp_response(self, t_samp, nfft, output="VEL",
-                              start_stage=None, end_stage=None):
+                              start_stage=None, end_stage=None,
+                              hide_sensitivity_mismatch_warning=False):
         """
         Returns frequency response and corresponding frequencies using
         evalresp.
@@ -1412,6 +1717,12 @@ class Response(ComparingObject):
                 velocity, output unit is meters/second
             ``"ACC"``
                 acceleration, output unit is meters/second**2
+            ``"DEF"``
+                default units, the response is calculated in
+                output units/input units (last stage/first stage).
+                Useful if the units for a particular type of sensor (e.g., a
+                pressure sensor) cannot be converted to displacement, velocity
+                or acceleration.
 
         :type start_stage: int, optional
         :param start_stage: Stage sequence number of first stage that will be
@@ -1419,16 +1730,25 @@ class Response(ComparingObject):
         :type end_stage: int, optional
         :param end_stage: Stage sequence number of last stage that will be
             used (disregarding all later stages).
-        :rtype: tuple of two arrays
+        :type hide_sensitivity_mismatch_warning: bool
+        :param hide_sensitivity_mismatch_warning: Hide the evalresp warning
+            that computed and reported sensitivities do not match.
+        :rtype: tuple(:class:`numpy.ndarray`, :class:`numpy.ndarray`)
         :returns: frequency response and corresponding frequencies
         """
         # Calculate the output frequencies.
         fy = 1 / (t_samp * 2.0)
         # start at zero to get zero for offset/ DC of fft
-        freqs = np.linspace(0, fy, nfft // 2 + 1).astype(np.float64)
+        # numpy 1.9 introduced a dtype kwarg
+        try:
+            freqs = np.linspace(0, fy, int(nfft // 2) + 1, dtype=np.float64)
+        except Exception:
+            freqs = np.linspace(0, fy, int(nfft // 2) + 1).astype(np.float64)
 
+        hsmw = hide_sensitivity_mismatch_warning  # PEP8
         response = self.get_evalresp_response_for_frequencies(
-            freqs, output=output, start_stage=start_stage, end_stage=end_stage)
+            freqs, output=output, start_stage=start_stage, end_stage=end_stage,
+            hide_sensitivity_mismatch_warning=hsmw)
         return response, freqs
 
     def __str__(self):
@@ -1488,12 +1808,18 @@ class Response(ComparingObject):
         :type output: str
         :param output: Output units. One of:
 
-                ``"DISP"``
-                    displacement
-                ``"VEL"``
-                    velocity
-                ``"ACC"``
-                    acceleration
+            ``"DISP"``
+                displacement, output unit is meters
+            ``"VEL"``
+                velocity, output unit is meters/second
+            ``"ACC"``
+                acceleration, output unit is meters/second**2
+            ``"DEF"``
+                default units, the response is calculated in
+                output units/input units (last stage/first stage).
+                Useful if the units for a particular type of sensor (e.g., a
+                pressure sensor) cannot be converted to displacement, velocity
+                or acceleration.
 
         :type start_stage: int, optional
         :param start_stage: Stage sequence number of first stage that will be
@@ -1562,13 +1888,13 @@ class Response(ComparingObject):
 
         t_samp = 1.0 / sampling_rate
         nyquist = sampling_rate / 2.0
-        nfft = sampling_rate / min_freq
+        nfft = int(sampling_rate / min_freq)
 
         cpx_response, freq = self.get_evalresp_response(
             t_samp=t_samp, nfft=nfft, output=output, start_stage=start_stage,
             end_stage=end_stage)
 
-        if axes:
+        if axes is not None:
             ax1, ax2 = axes
             fig = ax1.figure
         else:
@@ -1663,8 +1989,47 @@ class Response(ComparingObject):
         paz = self.get_paz()
         return paz_to_sacpz_string(paz, self.instrument_sensitivity)
 
+    @classmethod
+    def from_paz(cls, zeros, poles, stage_gain,
+                 stage_gain_frequency=1.0, input_units='M/S',
+                 output_units='VOLTS', normalization_frequency=1.0,
+                 pz_transfer_function_type='LAPLACE (RADIANS/SECOND)',
+                 normalization_factor=1.0):
+        """
+        Convert poles and zeros lists into a single-stage response.
 
-def paz_to_sacpz_string(paz, instrument_sensitivity):
+        Takes in lists of complex poles and zeros and returns a Response with
+        those values defining its only stage. Most of the optional parameters
+        defined here are from
+        :class:`~obspy.core.inventory.response.PolesZerosResponseStage`.
+
+        :type zeros: list[complex]
+        :param zeros: All zeros of the response to be defined.
+        :type poles: list[complex]
+        :param poles: All poles of the response to be defined.
+        :type stage_gain: float
+        :param stage_gain: The gain value of the response [sensitivity]
+        :returns: new Response instance with given P-Z values
+        """
+        pzstage = PolesZerosResponseStage(
+            stage_sequence_number=1, stage_gain=stage_gain,
+            stage_gain_frequency=stage_gain_frequency,
+            input_units=input_units, output_units=output_units,
+            pz_transfer_function_type=pz_transfer_function_type,
+            normalization_frequency=normalization_frequency,
+            zeros=zeros, poles=poles,
+            normalization_factor=normalization_factor)
+        sens = InstrumentSensitivity(value=stage_gain,
+                                     frequency=stage_gain_frequency,
+                                     input_units=input_units,
+                                     output_units=output_units)
+        resp = cls(instrument_sensitivity=sens, response_stages=[pzstage])
+        resp.recalculate_overall_sensitivity()
+        return resp
+
+
+def paz_to_sacpz_string(paz, instrument_sensitivity,
+                        to_radians_per_second=True):
     """
     Returns SACPZ ASCII text representation of Response.
 
@@ -1672,9 +2037,21 @@ def paz_to_sacpz_string(paz, instrument_sensitivity):
     :param paz: Poles and Zeros response information
     :type instrument_sensitivity: :class:`InstrumentSensitivity`
     :param paz: Overall instrument sensitivity of response
+    :type to_radians_per_second: bool
+    :param to_radians_per_second: Whether to convert poles and zeros to
+        radians/s before returning SACPZ string. This should be done in most
+        cases as SAC is expecting radians/s.
     :rtype: str
     :returns: Textual SACPZ representation of poles and zeros response stage.
     """
+    if to_radians_per_second:
+        paz = copy.deepcopy(paz)
+        paz.to_radians_per_second()
+    if paz.pz_transfer_function_type != 'LAPLACE (RADIANS/SECOND)':
+        msg = ('Returning a SACPZ string from a PAZResponseStage that is not '
+               'radians/s. SAC is expecting SACPZ data to be in radians/s '
+               '(see #3334).')
+        warnings.warn(msg)
     # assemble output string
     out = []
     out.append("ZEROS %i" % len(paz.zeros))
@@ -1808,7 +2185,7 @@ class InstrumentPolynomial(ComparingObject):
         :param approximation_upper_bound: Upper bound of approximation.
         :type maximum_error: float
         :param maximum_error: Maximum error.
-        :type coefficients: list of floats
+        :type coefficients: list[float]
         :param coefficients: List of polynomial coefficients.
         :param input_units: string
         :param input_units: The units of the data as input from the

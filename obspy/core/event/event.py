@@ -1,35 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-obspy.core.event.event - The Event class definition
-===================================================
-This module provides a class hierarchy to consistently handle event metadata.
-This class hierarchy is closely modelled after the de-facto standard format
-`QuakeML <https://quake.ethz.ch/quakeml/>`_.
-
-.. note::
-
-    For handling additional information not covered by the QuakeML standard and
-    how to output it to QuakeML see the :ref:`ObsPy Tutorial <quakeml-extra>`.
+Provides the Event class
 
 :copyright:
     The ObsPy Development Team (devs@obspy.org)
 :license:
     GNU Lesser General Public License, Version 3
-    (http://www.gnu.org/copyleft/lesser.html)
+    (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
 import copy
+from itertools import chain
 
 from obspy.core.event.header import (
     EventType, EventTypeCertainty, EventDescriptionType)
-from obspy.core.util.decorator import rlock
+from obspy.core.event.resourceid import ResourceIdentifier
+from obspy.core.util.misc import _yield_resource_id_parent_attr
 from obspy.imaging.source import plot_radiation_pattern, _setup_figure_and_axes
 
 
-from .base import (_event_type_class_factory,
-                   CreationInfo, ResourceIdentifier)
+from .base import _event_type_class_factory, CreationInfo
 
 
 __Event = _event_type_class_factory(
@@ -57,7 +46,7 @@ class Event(__Event):
     event is usually associated with one or more magnitudes, and with one or
     more focal mechanism determinations.
 
-    :type resource_id: :class:`~obspy.core.event.base.ResourceIdentifier`
+    :type resource_id: :class:`~obspy.core.event.resourceid.ResourceIdentifier`
     :param resource_id: Resource identifier of Event.
     :type force_resource_id: bool, optional
     :param force_resource_id: If set to False, the automatic initialization of
@@ -102,6 +91,10 @@ class Event(__Event):
     """
     do_not_warn_on = ["_format", "extra"]
 
+    def __init__(self, *args, **kwargs):
+        super(Event, self).__init__(*args, **kwargs)
+        self.scope_resource_ids()
+
     def short_str(self):
         """
         Returns a short string representation of the current Event.
@@ -114,12 +107,21 @@ class Event(__Event):
         origin = None
         if self.origins:
             origin = self.preferred_origin() or self.origins[0]
-            out += '%s | %+7.3f, %+8.3f' % (origin.time,
-                                            origin.latitude,
-                                            origin.longitude)
+            # get lat, lon, time and handle if any are None (#2119)
+            lat, lon, time = origin.latitude, origin.longitude, origin.time
+            lat_str = '%+7.3f' % lat if lat is not None else 'None'
+            lon_str = '%+8.3f' % lon if lon is not None else 'None'
+            out += '%s | %s, %s' % (time, lat_str, lon_str)
         if self.magnitudes:
             magnitude = self.preferred_magnitude() or self.magnitudes[0]
-            out += ' | %s %-2s' % (magnitude.mag,
+            try:
+                if round(magnitude.mag, 1) == magnitude.mag:
+                    mag_string = '%3.1f ' % magnitude.mag
+                else:
+                    mag_string = '%4.2f' % magnitude.mag
+            except TypeError:
+                mag_string = str(magnitude.mag)
+            out += ' | %s %-2s' % (mag_string,
                                    magnitude.magnitude_type)
         if origin and origin.evaluation_mode:
             out += ' | %s' % (origin.evaluation_mode)
@@ -169,7 +171,7 @@ class Event(__Event):
         Plot event location and/or the preferred focal mechanism
         and radiation pattern.
 
-        :type kind: list of str or nested list of str
+        :type kind: list[str] or list[list[str]]
         :param kind: A list of strings (for a 1-row plot) or a nested list of
             strings (one list of strings per row), with the following keywords
             to generate a matplotlib figure:
@@ -232,6 +234,7 @@ class Event(__Event):
             event.plot(kind=[['global'], ['p_sphere', 'p_quiver']])
         """
         import matplotlib.pyplot as plt
+        from .catalog import Catalog
         try:
             fm = self.preferred_focal_mechanism() or self.focal_mechanisms[0]
             mtensor = fm.moment_tensor.tensor
@@ -241,28 +244,39 @@ class Event(__Event):
 
         mt = [mtensor.m_rr, mtensor.m_tt, mtensor.m_pp,
               mtensor.m_rt, mtensor.m_rp, mtensor.m_tp]
-        fig, axes, kind_ = _setup_figure_and_axes(kind,
-                                                  subplot_size=subplot_size)
+
+        if len(kind) == 1:
+            kind_ = kind
+        else:
+            kind_ = list(chain(*kind))
+
         if any([k_ in ("ortho", "global", "local") for k_ in kind_]):
-            from .catalog import Catalog
             cat_ = Catalog([self])
+            kwargs["events"] = cat_
+
+        fig, axes, kind_ = _setup_figure_and_axes(kind,
+                                                  subplot_size=subplot_size,
+                                                  **kwargs)
         for ax, kind__ in zip(axes, kind_):
             if kind__ in ("ortho", "global", "local"):
+                ax.stock_img()
+                ax.gridlines()
+                ax.coastlines()
                 cat_.plot(projection=kind__, fig=ax, show=False,
                           **kwargs)
                 # shrink plot a bit to avoid it looking oversized compared to
                 # 3d axes that have some white space around them
-                if kind__ == "ortho":
-                    scale = 0.8
-                    for getter, setter in zip((ax.get_xlim, ax.get_ylim),
-                                              (ax.set_xlim, ax.set_ylim)):
-                        min_, max_ = getter()
-                        margin = (max_ - min_) * (1 - scale) / 2.0
-                        setter(min_ - margin, max_ + margin)
+                # if kind__ == "ortho":
+                #     scale = 0.8
+                #     for getter, setter in zip((ax.get_xlim, ax.get_ylim),
+                #                               (ax.set_xlim, ax.set_ylim)):
+                #         min_, max_ = getter()
+                #         margin = (max_ - min_) * (1 - scale) / 2.0
+                #         setter(min_ - margin, max_ + margin)
         plot_radiation_pattern(
             mt, kind=kind, coordinate_system='RTP', fig=fig, show=False)
 
-        fig.tight_layout(pad=0.1)
+        # fig.tight_layout(pad=0.1)
 
         if outfile:
             fig.savefig(outfile)
@@ -273,7 +287,6 @@ class Event(__Event):
 
         return fig
 
-    @rlock
     def __deepcopy__(self, memodict=None):
         """
         reset resource_id's object_id after deep copy to allow the
@@ -285,8 +298,12 @@ class Event(__Event):
         memodict[id(self)] = result
         for k, v in self.__dict__.items():
             setattr(result, k, copy.deepcopy(v, memodict))
-        result.resource_id.bind_resource_ids()  # bind all resource_ids
+        result.scope_resource_ids()
         return result
+
+    def __setstate__(self, state_dict):
+        self.__dict__.update(state_dict)
+        self.scope_resource_ids()
 
     def write(self, filename, format, **kwargs):
         """
@@ -296,7 +313,8 @@ class Event(__Event):
         :param filename: The name of the file to write.
         :type format: str
         :param format: The file format to use (e.g. ``"QUAKEML"``). See
-            :meth:`Catalog.write()` for a list of supported formats.
+            :meth:`obspy.core.event.catalog.Catalog.write()` for a list of
+            supported formats.
         :param kwargs: Additional keyword arguments passed to the underlying
             plugin's writer method.
 
@@ -308,6 +326,23 @@ class Event(__Event):
         """
         from .catalog import Catalog
         Catalog(events=[self]).write(filename, format, **kwargs)
+
+    def scope_resource_ids(self):
+        """
+        Ensure all resource_ids in event instance are event-scoped.
+
+        This will ensure the resource_ids refer to objects in the event
+        structure when possible.
+        """
+        gen = _yield_resource_id_parent_attr(self)
+
+        for resource_id, parent, attr in gen:
+            if attr == 'resource_id':
+                resource_id.set_referred_object(parent, parent=self,
+                                                warn=False)
+            else:
+                resource_id._parent_key = self
+                resource_id._object_id = None
 
 
 __EventDescription = _event_type_class_factory(

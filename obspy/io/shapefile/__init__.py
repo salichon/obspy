@@ -14,7 +14,7 @@ Write support works via the ObsPy plugin structure for
 >>> cat = read_events()  # load example data
 >>> cat.write("my_events.shp", format="SHAPEFILE")  # doctest: +SKIP
 
-Additional information for events can be written to the shapefile as custom
+Additional information can be written to the shapefile as custom
 database columns. In this toy example we add the Flinn Engdahl region as a
 database column (see :func:`obspy.io.shapefile.core._write_shapefile()`):
 
@@ -27,6 +27,10 @@ database column (see :func:`obspy.io.shapefile.core._write_shapefile()`):
 >>> cat.write("my_events.shp", format="SHAPEFILE",
 ...           extra_fields=extra_fields)  # doctest: +SKIP
 
+Note that the number of values given for each custom database column must be
+equal to the number of events in a given catalog or equal to the total number
+of stations combined across all networks in a given inventory.
+
 .. seealso::
 
     The format definition can be found
@@ -38,6 +42,3 @@ database column (see :func:`obspy.io.shapefile.core._write_shapefile()`):
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA

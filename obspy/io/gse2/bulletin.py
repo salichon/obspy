@@ -10,10 +10,6 @@ GSE2.0 bulletin read support.
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 import re
 import warnings
 
@@ -21,7 +17,9 @@ from obspy.core.event import (Amplitude, Arrival, Catalog, Comment,
                               CreationInfo, Event, EventDescription,
                               Magnitude, Origin, OriginQuality,
                               OriginUncertainty, Pick, ResourceIdentifier,
-                              StationMagnitude, WaveformStreamID)
+                              StationMagnitude,
+                              StationMagnitudeContribution,
+                              WaveformStreamID)
 from obspy.core.event.header import (
     EvaluationMode, EventDescriptionType, EventType, EventTypeCertainty,
     OriginDepthType, OriginUncertaintyDescription, PickOnset, PickPolarity)
@@ -273,23 +271,25 @@ class Unpickler(object):
 
     def _get_res_id(self, ident, parent=None, parent_res_id=None):
         """
-        Create a :class:`~obspy.core.event.base.ResourceIdentifier` object.
+        Create a :class:`~obspy.core.event.resourceid.ResourceIdentifier`
+        object.
 
         :type ident: str
         :param ident: Id of
-            the :class:`~obspy.core.event.base.ResourceIdentifier`.
+            the :class:`~obspy.core.event.resourceid.ResourceIdentifier`.
         :type parent: :class:`~obspy.core.event.origin.Origin`,
             :class:`~obspy.core.event.event.Event` or any other object
             with a resource_id attribute.
         :param parent: The resource_id attribute of the parent will be
             used as a prefix for the new
-            :class:`~obspy.core.event.base.ResourceIdentifier`.
-        :type parent_res_id: :class:`~obspy.core.event.base.ResourceIdentifier`
-            of the parent.
+            :class:`~obspy.core.event.resourceid.ResourceIdentifier`.
+        :type parent_res_id:
+            :class:`~obspy.core.event.resourceid.ResourceIdentifier`
         :param parent_res_id:
-            :class:`~obspy.core.event.base.ResourceIdentifier`
-        :rtype: :class:`~obspy.core.event.base.ResourceIdentifier`
-        :return: ResourceIdentifier object.
+            :class:`~obspy.core.event.resourceid.ResourceIdentifier` of the
+            parent.
+        :rtype: :class:`~obspy.core.event.resourceid.ResourceIdentifier`
+        :return:  ResourceIdentifier object.
         """
         prefix = self.res_id_prefix
         # Put the parent id as prefix
@@ -324,9 +324,9 @@ class Unpickler(object):
         :type first_line: str
         :param first_line: First line of header.
         """
-        line_1_pattern = 'BEGIN\sGSE2.0'
-        line_2_pattern = 'MSG_TYPE\s(REQUEST|DATA|SUBSCRIPTION|PROBLEM)'
-        line_3_pattern = 'MSG_ID\s\w{1,20}\s?\w{1,8}'
+        line_1_pattern = r'BEGIN\sGSE2.0'
+        line_2_pattern = r'MSG_TYPE\s(REQUEST|DATA|SUBSCRIPTION|PROBLEM)'
+        line_3_pattern = r'MSG_ID\s\w{1,20}\s?\w{1,8}'
 
         if not re.match(line_1_pattern, first_line):
             raise GSE2BulletinSyntaxError('Wrong GSE2.0 header')
@@ -451,6 +451,8 @@ class Unpickler(object):
         public_id = "event/%s" % event_id
         event.resource_id = self._get_res_id(public_id)
 
+        event.scope_resource_ids()
+
         return event
 
     def _parse_origin(self, event):
@@ -460,7 +462,7 @@ class Unpickler(object):
         :type event: :class:`~obspy.core.event.event.Event`
         :param event: Event of the origin.
         :rtype: :class:`~obspy.core.event.origin.Origin`,
-            :class:`~obspy.core.event.base.ResourceIdentifier`
+            :class:`~obspy.core.event.resourceid.ResourceIdentifier`
         :returns: Parsed origin or None, resource identifier of the
             origin.
         """
@@ -484,7 +486,7 @@ class Unpickler(object):
         line = self._skip_empty_lines()
 
         # File from ldg can have author on several lines
-        while re.match('\s{105,}\w+\s*', line):
+        while re.match(r'\s{105,}\w+\s*', line):
             fields = self.fields['line_1']
             origin.creation_info.author += line[fields['author']].strip()
             line = self._skip_empty_lines()
@@ -519,7 +521,7 @@ class Unpickler(object):
         :param magnitudes: Store magnitudes in a list to keep
             their positions.
         :rtype: :class:`~obspy.core.event.origin.Origin`,
-            :class:`~obspy.core.event.base.ResourceIdentifier`
+            :class:`~obspy.core.event.resourceid.ResourceIdentifier`
         :returns: Parsed origin or None, resource identifier of the
             origin.
         """
@@ -611,6 +613,12 @@ class Unpickler(object):
                 magnitudes.append(None)
 
         return origin, origin_res_id
+
+    def _find_magnitude_by_type(self, event, origin_res_id, magnitude_type):
+        for mag in event.magnitudes:
+            if mag.origin_id == origin_res_id \
+                    and mag.magnitude_type == magnitude_type:
+                return mag
 
     def _parse_second_line_origin(self, line, event, origin, magnitudes):
         magnitude_errors = []
@@ -897,17 +905,29 @@ class Unpickler(object):
                 public_id = "amplitude/%s" % line_id
                 amplitude.resource_id = self._get_res_id(public_id)
                 event.amplitudes.append(amplitude)
-
                 for i in [0, 1]:
                     sta_mag = StationMagnitude()
                     sta_mag.creation_info = self._get_creation_info()
                     sta_mag.origin_id = origin_res_id
                     sta_mag.amplitude_id = amplitude.resource_id
                     sta_mag.station_magnitude_type = magnitude_types[i]
-                    sta_mag.mag = magnitude_values[i]
+                    try:
+                        sta_mag.mag = magnitude_values[i]
+                    except ValueError:
+                        continue
+                    sta_mag.waveform_id = pick.waveform_id
                     public_id = "magnitude/station/%s/%s" % (line_id, i)
                     sta_mag.resource_id = self._get_res_id(public_id)
                     event.station_magnitudes.append(sta_mag)
+
+                    # Associate station mag with network mag of same type
+                    mag = self._find_magnitude_by_type(event, origin_res_id,
+                                                       magnitude_types[i])
+                    if mag:
+                        contrib = StationMagnitudeContribution()
+                        contrib.station_magnitude_id = sta_mag.resource_id
+                        contrib.weight = 1.0
+                        mag.station_magnitude_contributions.append(contrib)
             except ValueError:
                 pass
 
@@ -1008,7 +1028,7 @@ def _read_gse2(filename, inventory=None, default_network_code='XX',
         are not found in the inventory.
     :type res_id_prefix: str
     :param res_id_prefix: Prefix used
-        in :class:`~obspy.core.event.base.ResourceIdentifier` attributes.
+        in :class:`~obspy.core.event.resourceid.ResourceIdentifier` attributes.
     :type fields: dict
     :param fields: dictionary of positions of input fields, used if input file
         is non-standard
@@ -1111,8 +1131,8 @@ def _read_gse2(filename, inventory=None, default_network_code='XX',
     ... fields=fields, event_point_separator=True)
     >>> print(catalog)
     2 Event(s) in Catalog:
-    1995-01-16T07:26:52.400000Z | +39.450,  +20.440 | 3.6 mb | manual
-    1995-01-16T07:27:07.300000Z | +50.772, -129.760 | 1.2 Ml | manual
+    1995-01-16T07:26:52.400000Z | +39.450,  +20.440 | 3.6  mb | manual
+    1995-01-16T07:27:07.300000Z | +50.772, -129.760 | 1.2  Ml | manual
     """
     return Unpickler(inventory, default_network_code, default_location_code,
                      default_channel_code, res_id_prefix, fields,

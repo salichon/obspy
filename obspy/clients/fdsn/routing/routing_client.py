@@ -6,23 +6,22 @@ Base class for all FDSN routers.
 :copyright:
     The ObsPy Development Team (devs@obspy.org)
     Celso G Reyes, 2017
-    IRIS-DMC
+    EarthScope (former IRIS-DMC)
 :license:
     GNU Lesser General Public License, Version 3
     (https://www.gnu.org/copyleft/lesser.html)
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-from future.builtins import *  # NOQA
-
 from multiprocessing.dummy import Pool as ThreadPool
 
 import decorator
+import io
+import sys
+import traceback
 import warnings
+from urllib.parse import urlparse
 
-from obspy.core.compatibility import (urlparse, string_types,
-                                      get_reason_from_response)
 import obspy
+from obspy.core.util.deprecation_helpers import ObsPyDeprecationWarning
 
 from ...base import HTTPClient
 from .. import client
@@ -36,9 +35,10 @@ def RoutingClient(routing_type, *args, **kwargs):  # NOQA
 
     :type routing_type: str
     :param routing_type: The type of router to initialize.
-        ``"iris-federator"`` or ``"eida-routing"``. Will consequently return
-        either a :class:`~.federator_routing_client.FederatorRoutingClient` or
-        a :class:`~.eidaws_routing_client.EIDAWSRoutingClient` object,
+        ``"earthscope-federator"`` or ``"eida-routing"``. Will consequently
+        return either a
+        :class:`~.federator_routing_client.FederatorRoutingClient` or a
+        :class:`~.eidaws_routing_client.EIDAWSRoutingClient` object,
         respectively.
 
     Remaining ``args`` and ``kwargs`` will be passed to the underlying classes.
@@ -47,9 +47,10 @@ def RoutingClient(routing_type, *args, **kwargs):  # NOQA
 
     >>> from obspy.clients.fdsn import RoutingClient
 
-    Get an instance of a routing client using the IRIS Federator:
+    Get an instance of a routing client using the EarthScope (former IRIS)
+    Federator:
 
-    >>> c = RoutingClient("iris-federator")
+    >>> c = RoutingClient("earthscope-federator")
     >>> print(type(c))  # doctest: +ELLIPSIS
     <class '...routing.federator_routing_client.FederatorRoutingClient'>
 
@@ -60,16 +61,29 @@ def RoutingClient(routing_type, *args, **kwargs):  # NOQA
     >>> print(type(c))  # doctest: +ELLIPSIS
     <class '...routing.eidaws_routing_client.EIDAWSRoutingClient'>
     """
+    if routing_type.lower() == "iris-federator":
+        routing_type = "earthscope-federator"
+        msg = ("IRIS is now EarthScope, please consider changing the "
+               "'routing_type' to 'earthscope-federator'.")
+        warnings.warn(msg, ObsPyDeprecationWarning)
+
     if routing_type.lower() == "eida-routing":
         from .eidaws_routing_client import EIDAWSRoutingClient
         return EIDAWSRoutingClient(*args, **kwargs)
-    if routing_type.lower() == "iris-federator":
+    elif routing_type.lower() == "earthscope-federator":
         from .federator_routing_client import FederatorRoutingClient
         return FederatorRoutingClient(*args, **kwargs)
     else:
         raise NotImplementedError(
             "Routing type '%s' is not implemented. Available types: "
-            "`iris-federator`, `eida-routing`" % routing_type)
+            "`earthscope-federator`, `eida-routing`" % routing_type)
+
+
+@decorator.decorator
+def _assert_format_not_in_kwargs(f, *args, **kwargs):
+    if "format" in kwargs:
+        raise ValueError("The `format` argument is not supported")
+    return f(*args, **kwargs)
 
 
 @decorator.decorator
@@ -84,6 +98,17 @@ def _assert_attach_response_not_in_kwargs(f, *args, **kwargs):
     if "attach_response" in kwargs:
         raise ValueError("The `attach_response` argument is not supported")
     return f(*args, **kwargs)
+
+
+def _try_download_bulk(r):
+    try:
+        return _download_bulk(r)
+    except Exception:
+        reason = "".join(traceback.format_exception(*sys.exc_info()))
+        warnings.warn(
+            "Failed to download data of type '%s' from '%s' due to: \n%s" % (
+                r["data_type"], r["endpoint"], reason))
+        return None
 
 
 def _download_bulk(r):
@@ -140,10 +165,10 @@ class BaseRoutingClient(HTTPClient):
         :type routing_type: str
         :param routing_type: The type of
             router to initialize. For details see :func:`RoutingClient`.
-        :type exclude_providers: str or list of str
+        :type exclude_providers: str or list[str]
         :param exclude_providers: Get no data from these providers. Can be
             the full HTTP address or one of the shortcuts ObsPy knows about.
-        :type include_providers: str or list of str
+        :type include_providers: str or list[str]
         :param include_providers: Get data only from these providers. Can be
             the full HTTP address of one of the shortcuts ObsPy knows about.
         :type credentials: dict
@@ -198,7 +223,7 @@ class BaseRoutingClient(HTTPClient):
     def _expand_providers(self, providers):
         if providers is None:
             providers = []
-        elif isinstance(providers, string_types):
+        elif isinstance(providers, str):
             providers = [providers]
         return [_strip_protocol(URL_MAPPINGS[_i])
                 if _i in URL_MAPPINGS
@@ -251,7 +276,7 @@ class BaseRoutingClient(HTTPClient):
                 "kwargs": kwargs,
                 "credentials": self.credentials})
         pool = ThreadPool(processes=len(dl_requests))
-        results = pool.map(_download_bulk, dl_requests)
+        results = pool.map(_try_download_bulk, dl_requests)
 
         # Merge all results into a single object.
         if data_type == "waveform":
@@ -268,6 +293,10 @@ class BaseRoutingClient(HTTPClient):
                 continue
             collection += _i
 
+        # Explitly close the thread pool as somehow this does not work
+        # automatically under linux. See #2342.
+        pool.close()
+
         return collection
 
     def _handle_requests_http_error(self, r):
@@ -277,7 +306,11 @@ class BaseRoutingClient(HTTPClient):
 
         Please overwrite this method in a child class if necessary.
         """
-        raise_on_error(r.status_code, get_reason_from_response(r))
+        reason = r.reason.encode()
+        if hasattr(r, "content"):
+            reason += b" -- " + r.content
+        with io.BytesIO(reason) as buf:
+            raise_on_error(r.status_code, buf)
 
     @_assert_filename_not_in_kwargs
     @_assert_attach_response_not_in_kwargs
@@ -331,16 +364,16 @@ class BaseRoutingClient(HTTPClient):
         supported.
 
         This can route on a number of different parameters, please see the
-        web sites of the
-        `IRIS Federator  <https://service.iris.edu/irisws/fedcatalog/1/>`_
-        and of the `EIDAWS Routing Service
+        web sites of the `EarthScope (former IRIS) Federator
+        <https://service.iris.edu/irisws/fedcatalog/1/>`_ and of the
+        `EIDAWS Routing Service
         <http://www.orfeus-eu.org/data/eida/webservices/routing/>`_ for
         details.
         """
         # Just pass these to the bulk request.
         bulk = [kwargs.pop(key, '*') for key in (
-                    "network", "station", "location", "channel", "starttime",
-                    "endtime")]
+                "network", "station", "location", "channel", "starttime",
+                "endtime")]
         return self.get_stations_bulk([bulk], **kwargs)
 
 
